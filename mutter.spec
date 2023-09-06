@@ -111,6 +111,10 @@ Provides: bundled(clutter) = 1.26.0
 
 Conflicts: mutter < 45~beta.1-2
 
+# Make sure dnf updates gnome-shell together with this package; otherwise we
+# might end up with broken gnome-shell installations due to mutter ABI changes.
+Conflicts: gnome-shell < 45~rc
+
 %description
 Mutter is a window and compositing manager that displays and manages
 your desktop via OpenGL. Mutter combines a sophisticated display engine
