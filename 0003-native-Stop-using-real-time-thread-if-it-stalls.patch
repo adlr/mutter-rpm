@@ -1,0 +1,1074 @@
+From c49ff787cefa5917e8c6601624db414930b9b1d6 Mon Sep 17 00:00:00 2001
+From: Ray Strode <rstrode@redhat.com>
+Date: Mon, 25 Sep 2023 22:29:17 +0200
+Subject: [PATCH 3/3] native: Stop using real-time thread if it stalls
+
+RTKit requires mutter to set a hard rlimit on how long its thread will
+use CPU before going back to the kernel. This limit is about 12 frames.
+
+Unfortunately, amdgpu seems to have a bug at the moment where it will
+cause the thread to stall longer than that when the screen is locked.
+
+It also seemingly stalls during some games.
+
+Rather than let the display server get slayed, this commit adds a
+roundtrip through the kernel to reset the clock when things are stalled,
+and tells mutter to switch away from using real-time threads.
+
+Closes https://gitlab.gnome.org/GNOME/mutter/-/issues/3037
+---
+ src/backends/native/meta-thread-watcher.c | 419 ++++++++++++++++++++++
+ src/backends/native/meta-thread-watcher.h |  36 ++
+ src/backends/native/meta-thread.c         |  65 +++-
+ src/meson.build                           |   3 +-
+ 4 files changed, 520 insertions(+), 3 deletions(-)
+ create mode 100644 src/backends/native/meta-thread-watcher.c
+ create mode 100644 src/backends/native/meta-thread-watcher.h
+
+diff --git a/src/backends/native/meta-thread-watcher.c b/src/backends/native/meta-thread-watcher.c
+new file mode 100644
+index 000000000..439966ef2
+--- /dev/null
++++ b/src/backends/native/meta-thread-watcher.c
+@@ -0,0 +1,419 @@
++/*
++ * Copyright (C) 2023 Red Hat
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public License as
++ * published by the Free Software Foundation; either version 2 of the
++ * License, or (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful, but
++ * WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, see <http://www.gnu.org/licenses/>.
++ */
++
++#include "config.h"
++
++#include "backends/native/meta-thread-watcher.h"
++
++#include "clutter/clutter.h"
++#include <fcntl.h>
++#include <gio/gio.h>
++#include <glib-object.h>
++#include <glib-unix.h>
++#include <glib/gstdio.h>
++#include <poll.h>
++#include <signal.h>
++#include <sys/wait.h>
++#include <unistd.h>
++
++#include "clutter/clutter-private.h"
++#include "core/util-private.h"
++
++/* There's a watchdog timer that if left to its own devices will fire after
++ * priv->interval_ms milliseconds.
++ *
++ * There's a GLib main loop timeout that runs just before the watchdog timer fires
++ * to reset the timer to run later.
++ *
++ * If the main loop is ever blocked the main loop timeout won't run and the timer
++ * wont get reset. In this way we can tell if the thread with the main loop is stalled.
++ *
++ * WATCH_INTERVAL_PHASE_OFFSET_MS is how many milliseconds before the watchdog timer
++ * is supposed to fire that the main loop timeout is supposed to reset the timer.
++ *
++ * It just needs to be long enough for timer_settime to be called, but there's
++ * no real disadvantage to making it longer, so long as it's less the thread rlimit.
++ *
++ * It's currently set somewhat arbitrarily at 16ms (approximately one rendererd frame
++ * on most machines)
++ */
++#define WATCH_INTERVAL_PHASE_OFFSET_MS ms (16)
++
++enum
++{
++  THREAD_STALLED,
++
++  N_SIGNALS
++};
++
++static guint signals[N_SIGNALS];
++
++struct _MetaThreadWatcher
++{
++  GObject parent_instance;
++};
++
++typedef struct _MetaThreadWatcherPrivate
++{
++  int fds[2];
++  int64_t interval_ms;
++  timer_t *timer;
++  guint notification_watch_id;
++  GMainContext *context;
++  GSource *source;
++} MetaThreadWatcherPrivate;
++
++G_DEFINE_TYPE_WITH_PRIVATE (MetaThreadWatcher, meta_thread_watcher, G_TYPE_OBJECT)
++
++static void
++meta_thread_watcher_constructed (GObject *object)
++{
++  MetaThreadWatcher *watcher = META_THREAD_WATCHER (object);
++  MetaThreadWatcherPrivate *priv = meta_thread_watcher_get_instance_private (watcher);
++
++  priv->timer = NULL;
++  priv->fds[0] = -1;
++  priv->fds[1] = -1;
++
++  G_OBJECT_CLASS (meta_thread_watcher_parent_class)->constructed (object);
++}
++
++static void
++close_fds (MetaThreadWatcher *watcher)
++{
++  MetaThreadWatcherPrivate *priv = meta_thread_watcher_get_instance_private (watcher);
++
++  g_clear_fd (&priv->fds[0], NULL);
++  g_clear_fd (&priv->fds[1], NULL);
++}
++
++static void
++notify_watched_thread (int fd)
++{
++  ssize_t bytes_written = 0;
++
++  do
++    {
++      bytes_written = write (fd, "", 1);
++    }
++  while (bytes_written < 0 && errno == EINTR);
++}
++
++static void
++clear_notifications (MetaThreadWatcher *watcher)
++{
++  MetaThreadWatcherPrivate *priv = meta_thread_watcher_get_instance_private (watcher);
++  ssize_t bytes_read;
++  char buf[64];
++
++  do
++    {
++      bytes_read = read (priv->fds[0], buf, sizeof (buf));
++    }
++  while (bytes_read > 0 || (bytes_read < 0 && errno == EINTR));
++}
++
++static void
++yield (void)
++{
++  struct pollfd sleep_pollfd = { -1, 0, 0 };
++  poll (&sleep_pollfd, 0, 1);
++}
++
++static void
++on_xcpu_signal (int        signal,
++                siginfo_t *signal_data,
++                void      *context)
++{
++  int fd;
++  static gboolean backtrace_printed = FALSE;
++
++  /* If we're getting the XCPU signal that means the realtime thread is blocked and
++   * mutter is at risk of being killed by the kernel. We can placate the kernel by
++   * sleeping for a millisecond or so. That should buy us another ~200ms to tear
++   * down the realtime thread and get out of the dangerzone.
++   */
++  yield ();
++
++  /* If we're here, there's a bug somewhere, so send backtraces to the journal.
++   */
++  if (!backtrace_printed)
++    {
++      const char *message = "Hang in realtime thread detected! Backtrace:\n";
++      write (STDERR_FILENO, message, strlen (message));
++      meta_print_backtrace ();
++      backtrace_printed = TRUE;
++    }
++
++  if (signal_data->si_pid != 0 || signal_data->si_code != SI_TIMER)
++    return;
++
++  fd = signal_data->si_value.sival_int;
++  notify_watched_thread (fd);
++}
++
++static void
++meta_thread_watcher_finalize (GObject *object)
++{
++  MetaThreadWatcher *watcher = META_THREAD_WATCHER (object);
++
++  meta_thread_watcher_stop (watcher);
++  G_OBJECT_CLASS (meta_thread_watcher_parent_class)->finalize (object);
++}
++
++static void
++meta_thread_watcher_class_init (MetaThreadWatcherClass *klass)
++{
++  GObjectClass *object_class = G_OBJECT_CLASS (klass);
++  struct sigaction signal_request;
++  int ret;
++
++  object_class->constructed = meta_thread_watcher_constructed;
++  object_class->finalize = meta_thread_watcher_finalize;
++
++  signals[THREAD_STALLED] =
++    g_signal_new ("thread-stalled",
++                  G_TYPE_FROM_CLASS (klass),
++                  G_SIGNAL_RUN_LAST,
++                  0,
++                  NULL, NULL, NULL,
++                  G_TYPE_NONE, 0);
++
++  signal_request.sa_flags = SA_SIGINFO;
++  signal_request.sa_sigaction = on_xcpu_signal;
++  sigemptyset (&signal_request.sa_mask);
++  ret = sigaction (SIGXCPU, &signal_request, NULL);
++
++  if (ret == -1)
++    g_warning ("Failed to listen for SIGXCPU signal: %m");
++}
++
++static void
++meta_thread_watcher_init (MetaThreadWatcher *thread_watcher)
++{
++}
++
++MetaThreadWatcher *
++meta_thread_watcher_new (void)
++{
++  MetaThreadWatcher *watcher;
++
++  watcher = g_object_new (META_TYPE_THREAD_WATCHER, NULL);
++
++  return watcher;
++}
++
++static gboolean
++on_reset_timer (MetaThreadWatcher *watcher)
++{
++  g_autoptr (GError) error = NULL;
++  gboolean was_reset;
++
++  if (!meta_thread_watcher_is_started (watcher))
++    return G_SOURCE_REMOVE;
++
++  was_reset = meta_thread_watcher_reset (watcher, &error);
++
++  if (!was_reset)
++    {
++      g_warning ("Failed to reset real-time thread watchdog timer: %s",
++                 error->message);
++      return G_SOURCE_REMOVE;
++    }
++
++  return G_SOURCE_CONTINUE;
++}
++
++void
++meta_thread_watcher_attach (MetaThreadWatcher *watcher,
++                            GMainContext      *context)
++{
++  MetaThreadWatcherPrivate *priv = meta_thread_watcher_get_instance_private (watcher);
++  g_return_if_fail (META_IS_THREAD_WATCHER (watcher));
++  g_return_if_fail (priv->source == NULL);
++
++  g_clear_pointer (&priv->context, g_main_context_unref);
++  priv->context = g_main_context_ref (context);
++}
++
++void
++meta_thread_watcher_detach (MetaThreadWatcher *watcher)
++{
++  MetaThreadWatcherPrivate *priv = meta_thread_watcher_get_instance_private (watcher);
++
++  g_return_if_fail (META_IS_THREAD_WATCHER (watcher));
++
++  g_clear_pointer (&priv->source, g_source_destroy);
++  g_clear_pointer (&priv->context, g_main_context_unref);
++}
++
++static gboolean
++on_thread_stalled (int                fd,
++                   GIOCondition       condition,
++                   MetaThreadWatcher *watcher)
++{
++  if (condition & G_IO_IN)
++    clear_notifications (watcher);
++
++  if (meta_thread_watcher_is_started (watcher))
++    g_signal_emit (G_OBJECT (watcher), signals[THREAD_STALLED], 0);
++
++  return G_SOURCE_REMOVE;
++}
++
++gboolean
++meta_thread_watcher_is_started (MetaThreadWatcher *watcher)
++{
++  MetaThreadWatcherPrivate *priv = meta_thread_watcher_get_instance_private (watcher);
++
++  g_return_val_if_fail (META_IS_THREAD_WATCHER (watcher), FALSE);
++
++  return priv->timer != NULL;
++}
++
++static void
++meta_thread_watcher_clear_source (MetaThreadWatcher *watcher)
++{
++  MetaThreadWatcherPrivate *priv = meta_thread_watcher_get_instance_private (watcher);
++  priv->source = NULL;
++}
++
++gboolean
++meta_thread_watcher_start (MetaThreadWatcher  *watcher,
++                           int                 interval_us,
++                           GError            **error)
++{
++  MetaThreadWatcherPrivate *priv = meta_thread_watcher_get_instance_private (watcher);
++  GSource *source = NULL;
++  sigevent_t timer_request;
++  int ret;
++  g_autofree timer_t *timer = NULL;
++
++  g_return_val_if_fail (META_IS_THREAD_WATCHER (watcher), FALSE);
++  g_return_val_if_fail (interval_us > ms2us (WATCH_INTERVAL_PHASE_OFFSET_MS), FALSE);
++  g_return_val_if_fail (priv->context != NULL, FALSE);
++
++  if (meta_thread_watcher_is_started (watcher))
++    return TRUE;
++
++  priv->interval_ms = us2ms (interval_us);
++
++  if (!g_unix_open_pipe (priv->fds,
++                         FD_CLOEXEC | O_NONBLOCK,
++                         error))
++    return FALSE;
++
++  if (priv->fds[0] == -1 || priv->fds[1] == -1)
++    {
++      g_set_error (error, G_IO_ERROR, g_io_error_from_errno (EBADF),
++                   "Thread watcher could not create pipe");
++      return FALSE;
++    }
++
++  timer_request.sigev_notify = SIGEV_THREAD_ID;
++  timer_request.sigev_signo = SIGXCPU;
++  timer_request.sigev_value.sival_int = priv->fds[1];
++  timer_request._sigev_un._tid = gettid ();
++  timer = g_new0 (timer_t, 1);
++  ret = timer_create (CLOCK_THREAD_CPUTIME_ID, &timer_request, timer);
++
++  if (ret == -1)
++    {
++      g_set_error (error, G_IO_ERROR, g_io_error_from_errno (errno),
++                   "Failed to create unix timer: %s", g_strerror (errno));
++      return FALSE;
++    }
++
++  priv->timer = g_steal_pointer (&timer);
++
++  if (!meta_thread_watcher_reset (watcher, error))
++    return FALSE;
++
++  priv->notification_watch_id = g_unix_fd_add (priv->fds[0],
++                                               G_IO_IN,
++                                               (GUnixFDSourceFunc) on_thread_stalled,
++                                               watcher);
++
++  source = g_timeout_source_new (priv->interval_ms - WATCH_INTERVAL_PHASE_OFFSET_MS);
++  g_source_set_name (source, "[mutter] Thread watcher");
++  g_source_set_callback (source,
++                         (GSourceFunc) on_reset_timer,
++                         watcher,
++                         (GDestroyNotify)
++                         meta_thread_watcher_clear_source);
++  g_source_attach (source, priv->context);
++  g_source_unref (source);
++
++  priv->source = source;
++
++  return TRUE;
++}
++
++static void
++free_timer (timer_t *timer)
++{
++  if (!timer)
++    return;
++
++  timer_delete (*timer);
++}
++
++gboolean
++meta_thread_watcher_reset (MetaThreadWatcher  *watcher,
++                           GError            **error)
++{
++  MetaThreadWatcherPrivate *priv = meta_thread_watcher_get_instance_private (watcher);
++  struct itimerspec timer_interval;
++  int ret;
++
++  g_return_val_if_fail (META_IS_THREAD_WATCHER (watcher), FALSE);
++
++  timer_interval.it_value.tv_sec = 0;
++  timer_interval.it_value.tv_nsec = ms2ns (priv->interval_ms);
++  timer_interval.it_interval.tv_sec = timer_interval.it_value.tv_sec;
++  timer_interval.it_interval.tv_nsec = timer_interval.it_value.tv_nsec;
++
++  ret = timer_settime (*priv->timer, 0, &timer_interval, NULL);
++
++  if (ret == -1)
++    {
++      g_set_error (error, G_IO_ERROR, g_io_error_from_errno (errno),
++                   "Failed to arm unix timer: %s", g_strerror (errno));
++      meta_thread_watcher_stop (watcher);
++
++      return FALSE;
++    }
++
++  return TRUE;
++}
++
++void
++meta_thread_watcher_stop (MetaThreadWatcher *watcher)
++{
++  MetaThreadWatcherPrivate *priv = meta_thread_watcher_get_instance_private (watcher);
++
++  g_return_if_fail (META_IS_THREAD_WATCHER (watcher));
++
++  if (!meta_thread_watcher_is_started (watcher))
++    return;
++
++  meta_thread_watcher_detach (watcher);
++
++  g_clear_pointer (&priv->timer, free_timer);
++  g_clear_handle_id (&priv->notification_watch_id, g_source_remove);
++  close_fds (watcher);
++}
+diff --git a/src/backends/native/meta-thread-watcher.h b/src/backends/native/meta-thread-watcher.h
+new file mode 100644
+index 000000000..21e48de2d
+--- /dev/null
++++ b/src/backends/native/meta-thread-watcher.h
+@@ -0,0 +1,36 @@
++/*
++ * Copyright (C) 2023 Red Hat
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public License as
++ * published by the Free Software Foundation; either version 2 of the
++ * License, or (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful, but
++ * WITHOUT ANY WARRANTY; without even the watcheried warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, see <http://www.gnu.org/licenses/>.
++ */
++
++#pragma once
++
++#include <glib-object.h>
++
++#define META_TYPE_THREAD_WATCHER (meta_thread_watcher_get_type ())
++G_DECLARE_FINAL_TYPE (MetaThreadWatcher, meta_thread_watcher,
++                      META, THREAD_WATCHER, GObject)
++
++MetaThreadWatcher * meta_thread_watcher_new (void);
++void meta_thread_watcher_attach (MetaThreadWatcher *self,
++                                 GMainContext      *context);
++void meta_thread_watcher_detach (MetaThreadWatcher *self);
++gboolean meta_thread_watcher_start (MetaThreadWatcher  *watcher,
++                                    int                 interval_us,
++                                    GError            **error);
++gboolean meta_thread_watcher_is_started (MetaThreadWatcher *watcher);
++gboolean meta_thread_watcher_reset (MetaThreadWatcher  *watcher,
++                                    GError            **error);
++void meta_thread_watcher_stop (MetaThreadWatcher *watcher);
+diff --git a/src/backends/native/meta-thread.c b/src/backends/native/meta-thread.c
+index 08d01144d..a4188ee56 100644
+--- a/src/backends/native/meta-thread.c
++++ b/src/backends/native/meta-thread.c
+@@ -1,116 +1,121 @@
+ /*
+  * Copyright (C) 2018-2021 Red Hat
+  *
+  * This program is free software; you can redistribute it and/or
+  * modify it under the terms of the GNU General Public License as
+  * published by the Free Software Foundation; either version 2 of the
+  * License, or (at your option) any later version.
+  *
+  * This program is distributed in the hope that it will be useful, but
+  * WITHOUT ANY WARRANTY; without even the implied warranty of
+  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+  * General Public License for more details.
+  *
+  * You should have received a copy of the GNU General Public License
+  * along with this program; if not, see <http://www.gnu.org/licenses/>.
+  */
+ 
+ #include "config.h"
+ 
+ #include "backends/native/meta-thread-private.h"
+ 
+ #include <glib.h>
++#include <glib-unix.h>
++#include <signal.h>
+ #include <sys/resource.h>
++#include <unistd.h>
+ 
+ #include "backends/meta-backend-private.h"
+ #include "backends/meta-backend-types.h"
+ #include "backends/native/meta-thread-impl.h"
++#include "backends/native/meta-thread-watcher.h"
+ 
+ #include "meta-dbus-rtkit1.h"
+ #include "meta-private-enum-types.h"
+ 
+ enum
+ {
+   PROP_0,
+ 
+   PROP_BACKEND,
+   PROP_NAME,
+   PROP_THREAD_TYPE,
+   PROP_WANTS_REALTIME,
+ 
+   N_PROPS
+ };
+ 
+ static GParamSpec *obj_props[N_PROPS];
+ 
+ typedef struct _MetaThreadCallbackData
+ {
+   MetaThreadCallback callback;
+   gpointer user_data;
+   GDestroyNotify user_data_destroy;
+ } MetaThreadCallbackData;
+ 
+ typedef struct _MetaThreadCallbackSource
+ {
+   GSource base;
+ 
+   GMutex mutex;
+   GCond cond;
+ 
+   MetaThread *thread;
+   GMainContext *main_context;
+   GList *callbacks;
+   gboolean needs_flush;
+ } MetaThreadCallbackSource;
+ 
+ typedef struct _MetaThreadPrivate
+ {
+   MetaBackend *backend;
+   char *name;
+ 
+   GMainContext *main_context;
+ 
+   MetaThreadImpl *impl;
+   gboolean wants_realtime;
+   gboolean waiting_for_impl_task;
+   GSource *wrapper_source;
+ 
+   GMutex callbacks_mutex;
+   GHashTable *callback_sources;
+ 
+   MetaThreadType thread_type;
+ 
+   GThread *main_thread;
+ 
+   struct {
+     GThread *thread;
++    MetaThreadWatcher *thread_watcher;
+     GMutex init_mutex;
+   } kernel;
+ } MetaThreadPrivate;
+ 
+ typedef struct _MetaThreadClassPrivate
+ {
+   GType impl_type;
+ } MetaThreadClassPrivate;
+ 
+ static void initable_iface_init (GInitableIface *initable_iface);
+ 
+ G_DEFINE_TYPE_WITH_CODE (MetaThread, meta_thread, G_TYPE_OBJECT,
+                          G_ADD_PRIVATE (MetaThread)
+                          G_IMPLEMENT_INTERFACE (G_TYPE_INITABLE,
+                                                 initable_iface_init)
+                          g_type_add_class_private (g_define_type_id,
+                                                    sizeof (MetaThreadClassPrivate)))
+ 
+ static void
+ meta_thread_callback_data_free (MetaThreadCallbackData *callback_data)
+ {
+   if (callback_data->user_data_destroy)
+     callback_data->user_data_destroy (callback_data->user_data);
+   g_free (callback_data);
+ }
+ 
+ static void
+ meta_thread_get_property (GObject    *object,
+                           guint       prop_id,
+                           GValue     *value,
+@@ -181,123 +186,137 @@ get_rtkit_property (MetaDBusRealtimeKit1  *rtkit_proxy,
+    * org.freedesktop.DBus.Properties.GetAll. See
+    * <https://github.com/heftig/rtkit/pull/30>.
+    */
+   connection = g_dbus_proxy_get_connection (G_DBUS_PROXY (rtkit_proxy));
+   prop_value =
+     g_dbus_connection_call_sync (connection,
+                                  "org.freedesktop.RealtimeKit1",
+                                  "/org/freedesktop/RealtimeKit1",
+                                  "org.freedesktop.DBus.Properties",
+                                  "Get",
+                                  g_variant_new ("(ss)",
+                                                 "org.freedesktop.RealtimeKit1",
+                                                 property_name),
+                                  G_VARIANT_TYPE ("(v)"),
+                                  G_DBUS_CALL_FLAGS_NO_AUTO_START,
+                                  -1, NULL, error);
+   if (!prop_value)
+     return NULL;
+ 
+   g_variant_get (prop_value, "(v)", &property_variant);
+   return g_steal_pointer (&property_variant);
+ }
+ 
+ static gboolean
+ request_real_time_scheduling (MetaThread  *thread,
+                               GError     **error)
+ {
+   MetaThreadPrivate *priv = meta_thread_get_instance_private (thread);
+   g_autoptr (MetaDBusRealtimeKit1) rtkit_proxy = NULL;
+   g_autoptr (GError) local_error = NULL;
+-  int64_t rttime;
++  int64_t rttime, watch_interval;
+   struct rlimit rl;
+   uint32_t priority;
+ 
+   rtkit_proxy =
+     meta_dbus_realtime_kit1_proxy_new_for_bus_sync (G_BUS_TYPE_SYSTEM,
+                                                     G_DBUS_PROXY_FLAGS_DO_NOT_CONNECT_SIGNALS |
+                                                     G_DBUS_PROXY_FLAGS_DO_NOT_AUTO_START,
+                                                     "org.freedesktop.RealtimeKit1",
+                                                     "/org/freedesktop/RealtimeKit1",
+                                                     NULL,
+                                                     &local_error);
+   if (!rtkit_proxy)
+     {
+       g_dbus_error_strip_remote_error (local_error);
+       g_propagate_prefixed_error (error, g_steal_pointer (&local_error),
+                                   "Failed to acquire RTKit D-Bus proxy: ");
+       return FALSE;
+     }
+ 
+   priority = meta_dbus_realtime_kit1_get_max_realtime_priority (rtkit_proxy);
+   if (priority == 0)
+     {
+       g_autoptr (GVariant) priority_variant = NULL;
+ 
+       priority_variant = get_rtkit_property (rtkit_proxy,
+                                              "MaxRealtimePriority",
+                                              error);
+       if (!priority_variant)
+         return FALSE;
+ 
+       priority = g_variant_get_int32 (priority_variant);
+     }
+ 
+   if (priority == 0)
+     g_warning ("Maximum real time scheduling priority is 0");
+ 
+   rttime = meta_dbus_realtime_kit1_get_rttime_usec_max (rtkit_proxy);
+   if (rttime == 0)
+     {
+       g_autoptr (GVariant) rttime_variant = NULL;
+ 
+       rttime_variant = get_rtkit_property (rtkit_proxy,
+                                            "RTTimeUSecMax",
+                                            error);
+       if (!rttime_variant)
+         return FALSE;
+ 
+       rttime = g_variant_get_int64 (rttime_variant);
+     }
+ 
+   meta_topic (META_DEBUG_BACKEND,
+               "Setting soft and hard RLIMIT_RTTIME limit to %lu", rttime);
++
++  /* We set the soft-limit and hard-limit to the same value so the
++   * kernel won't send SIGXCPU to random threads. We synthesize our
++   * own SIGXCPU with a timer (See MetaThreadWatcher) that's always
++   * delivered to the approprate thread.
++   */
+   rl.rlim_cur = rttime;
+   rl.rlim_max = rttime;
+ 
+   if (setrlimit (RLIMIT_RTTIME, &rl) != 0)
+     {
+       g_set_error (error, G_IO_ERROR, g_io_error_from_errno (errno),
+                    "Failed to set RLIMIT_RTTIME: %s", g_strerror (errno));
+       return FALSE;
+     }
+ 
++  /* We make sure if a SIGXCPU is synthesized it gets raised before anything
++   * the kernel could throw at us. We do this by setting an interval three quarters
++   * of the soft limit.
++   */
++  watch_interval = (rl.rlim_cur * 3) / 4;
++  if (!meta_thread_watcher_start (priv->kernel.thread_watcher, watch_interval, error))
++    return FALSE;
++
+   meta_topic (META_DEBUG_BACKEND, "Setting '%s' thread real time priority to %d",
+               priv->name, priority);
+   if (!meta_dbus_realtime_kit1_call_make_thread_realtime_sync (rtkit_proxy,
+                                                                gettid (),
+                                                                priority,
+                                                                NULL,
+                                                                &local_error))
+     {
+       g_dbus_error_strip_remote_error (local_error);
+       g_propagate_error (error, g_steal_pointer (&local_error));
+       return FALSE;
+     }
+ 
+   return TRUE;
+ }
+ 
+ static gpointer
+ thread_impl_func (gpointer user_data)
+ {
+   MetaThread *thread = META_THREAD (user_data);
+   MetaThreadPrivate *priv = meta_thread_get_instance_private (thread);
+   MetaThreadImpl *impl = priv->impl;
+   MetaThreadImplRunFlags run_flags = META_THREAD_IMPL_RUN_FLAG_NONE;
+   GMainContext *thread_context = meta_thread_impl_get_main_context (impl);
+ #ifdef HAVE_PROFILER
+   MetaContext *context = meta_backend_get_context (priv->backend);
+   MetaProfiler *profiler = meta_context_get_profiler (context);
+ #endif
+ 
+   g_mutex_lock (&priv->kernel.init_mutex);
+@@ -443,77 +462,106 @@ static void
+ wrap_main_context (MetaThread   *thread,
+                    GMainContext *thread_main_context)
+ {
+   MetaThreadPrivate *priv = meta_thread_get_instance_private (thread);
+   g_autoptr (GSource) source = NULL;
+   WrapperSource *wrapper_source;
+ 
+   if (!g_main_context_acquire (thread_main_context))
+     g_return_if_reached ();
+ 
+   source = g_source_new (&wrapper_source_funcs,
+                                 sizeof (WrapperSource));
+   wrapper_source = (WrapperSource *) source;
+   wrapper_source->thread_main_context = thread_main_context;
+   g_source_set_ready_time (source, -1);
+   g_source_attach (source, NULL);
+ 
+   priv->wrapper_source = source;
+ }
+ 
+ static void
+ unwrap_main_context (MetaThread   *thread,
+                      GMainContext *thread_main_context)
+ {
+   MetaThreadPrivate *priv = meta_thread_get_instance_private (thread);
+ 
+   g_main_context_release (thread_main_context);
+   g_clear_pointer (&priv->wrapper_source, g_source_destroy);
+ }
+ 
++static void
++on_realtime_thread_stalled (MetaThread *thread)
++{
++  MetaThreadPrivate *priv = meta_thread_get_instance_private (thread);
++
++  g_warning ("Disabling realtime scheduling");
++  priv->wants_realtime = FALSE;
++  meta_thread_reset_thread_type (thread, META_THREAD_TYPE_KERNEL);
++}
++
+ static void
+ start_thread (MetaThread *thread)
+ {
+   MetaThreadPrivate *priv = meta_thread_get_instance_private (thread);
++  g_autoptr (GError) error = NULL;
+ 
+   switch (priv->thread_type)
+     {
+     case META_THREAD_TYPE_USER:
+       wrap_main_context (thread,
+                          meta_thread_impl_get_main_context (priv->impl));
+       break;
+     case META_THREAD_TYPE_KERNEL:
+       g_mutex_init (&priv->kernel.init_mutex);
+       g_mutex_lock (&priv->kernel.init_mutex);
++
++      if (priv->wants_realtime)
++        {
++          GMainContext *main_context;
++
++          priv->kernel.thread_watcher = meta_thread_watcher_new ();
++          main_context = meta_thread_impl_get_main_context (priv->impl);
++
++          meta_thread_watcher_attach (priv->kernel.thread_watcher, main_context);
++
++          g_signal_connect_object (priv->kernel.thread_watcher,
++                                   "thread-stalled",
++                                   G_CALLBACK (on_realtime_thread_stalled),
++                                   thread,
++                                   G_CONNECT_SWAPPED);
++        }
++
+       priv->kernel.thread = g_thread_new (priv->name,
+                                           thread_impl_func,
+                                           thread);
++
+       g_mutex_unlock (&priv->kernel.init_mutex);
+       break;
+     }
+ }
+ 
+ static gboolean
+ meta_thread_initable_init (GInitable     *initable,
+                            GCancellable  *cancellable,
+                            GError       **error)
+ {
+   MetaThread *thread = META_THREAD (initable);
+   MetaThreadPrivate *priv = meta_thread_get_instance_private (thread);
+   MetaThreadClass *thread_class = META_THREAD_GET_CLASS (thread);
+   MetaThreadClassPrivate *class_priv =
+     G_TYPE_CLASS_GET_PRIVATE (thread_class, META_TYPE_THREAD,
+                               MetaThreadClassPrivate);
+   g_autoptr (GMainContext) thread_context = NULL;
+ 
+   priv->main_context = g_main_context_default ();
+ 
+   priv->callback_sources =
+     g_hash_table_new_full (NULL, NULL,
+                            NULL, (GDestroyNotify) g_source_destroy);
+   meta_thread_register_callback_context (thread, priv->main_context);
+ 
+   thread_context = g_main_context_new ();
+ 
+   g_assert (g_type_is_a (class_priv->impl_type, META_TYPE_THREAD_IMPL));
+   priv->impl = g_object_new (class_priv->impl_type,
+                              "thread", thread,
+@@ -522,60 +570,63 @@ meta_thread_initable_init (GInitable     *initable,
+ 
+   start_thread (thread);
+ 
+   return TRUE;
+ }
+ 
+ static void
+ initable_iface_init (GInitableIface *initable_iface)
+ {
+   initable_iface->init = meta_thread_initable_init;
+ }
+ 
+ static void
+ finalize_thread_user (MetaThread *thread)
+ {
+   MetaThreadPrivate *priv = meta_thread_get_instance_private (thread);
+ 
+   meta_thread_impl_terminate (priv->impl);
+   while (meta_thread_impl_dispatch (priv->impl) > 0);
+   unwrap_main_context (thread, meta_thread_impl_get_main_context (priv->impl));
+ }
+ 
+ static void
+ finalize_thread_kernel (MetaThread *thread)
+ {
+   MetaThreadPrivate *priv = meta_thread_get_instance_private (thread);
+ 
+   meta_thread_impl_terminate (priv->impl);
+   g_thread_join (priv->kernel.thread);
+   priv->kernel.thread = NULL;
++
++  g_clear_object (&priv->kernel.thread_watcher);
++
+   g_mutex_clear (&priv->kernel.init_mutex);
+ }
+ 
+ static void
+ tear_down_thread (MetaThread *thread)
+ {
+   MetaThreadPrivate *priv = meta_thread_get_instance_private (thread);
+ 
+   switch (priv->thread_type)
+     {
+     case META_THREAD_TYPE_USER:
+       finalize_thread_user (thread);
+       break;
+     case META_THREAD_TYPE_KERNEL:
+       finalize_thread_kernel (thread);
+       break;
+     }
+ 
+   meta_thread_flush_callbacks (thread);
+ }
+ 
+ static void
+ meta_thread_finalize (GObject *object)
+ {
+   MetaThread *thread = META_THREAD (object);
+   MetaThreadPrivate *priv = meta_thread_get_instance_private (thread);
+ 
+   tear_down_thread (thread);
+ 
+   meta_thread_unregister_callback_context (thread, priv->main_context);
+@@ -640,61 +691,71 @@ meta_thread_class_init (MetaThreadClass *klass)
+ 
+ static void
+ meta_thread_init (MetaThread *thread)
+ {
+   MetaThreadPrivate *priv = meta_thread_get_instance_private (thread);
+ 
+   g_mutex_init (&priv->callbacks_mutex);
+   priv->main_thread = g_thread_self ();
+ }
+ 
+ void
+ meta_thread_class_register_impl_type (MetaThreadClass *thread_class,
+                                       GType            impl_type)
+ {
+   MetaThreadClassPrivate *class_priv =
+     G_TYPE_CLASS_GET_PRIVATE (thread_class, META_TYPE_THREAD,
+                               MetaThreadClassPrivate);
+ 
+   g_assert (class_priv->impl_type == G_TYPE_INVALID);
+   class_priv->impl_type = impl_type;
+ }
+ 
+ void
+ meta_thread_reset_thread_type (MetaThread     *thread,
+                                MetaThreadType  thread_type)
+ {
+   MetaThreadPrivate *priv = meta_thread_get_instance_private (thread);
+   g_autoptr (GMainContext) thread_context = NULL;
+ 
+   if (priv->thread_type == thread_type)
+-    return;
++    {
++      gboolean is_realtime;
++
++      if (thread_type != META_THREAD_TYPE_KERNEL)
++        return;
++
++      is_realtime = meta_thread_impl_is_realtime (priv->impl);
++
++      if (is_realtime == priv->wants_realtime)
++        return;
++    }
+ 
+   tear_down_thread (thread);
+   g_assert (!priv->wrapper_source);
+ 
+   priv->thread_type = thread_type;
+ 
+   start_thread (thread);
+ 
+   switch (priv->thread_type)
+     {
+     case META_THREAD_TYPE_USER:
+       g_assert (priv->wrapper_source);
+       break;
+     case META_THREAD_TYPE_KERNEL:
+       g_assert (!priv->wrapper_source);
+       break;
+     }
+ }
+ 
+ static int
+ dispatch_callbacks (MetaThread *thread,
+                     GList      *pending_callbacks)
+ {
+   int callback_count = 0;
+   GList *l;
+ 
+   for (l = pending_callbacks; l; l = l->next)
+     {
+       MetaThreadCallbackData *callback_data = l->data;
+ 
+diff --git a/src/meson.build b/src/meson.build
+index 4aabb6a14..427cef4d0 100644
+--- a/src/meson.build
++++ b/src/meson.build
+@@ -828,61 +828,62 @@ if have_native_backend
+     'backends/native/meta-kms.h',
+     'backends/native/meta-onscreen-native.c',
+     'backends/native/meta-onscreen-native.h',
+     'backends/native/meta-pointer-constraint-native.c',
+     'backends/native/meta-pointer-constraint-native.h',
+     'backends/native/meta-render-device-gbm.c',
+     'backends/native/meta-render-device-gbm.h',
+     'backends/native/meta-render-device-private.h',
+     'backends/native/meta-render-device-surfaceless.c',
+     'backends/native/meta-render-device-surfaceless.h',
+     'backends/native/meta-render-device.c',
+     'backends/native/meta-render-device.h',
+     'backends/native/meta-renderer-native-gles3.c',
+     'backends/native/meta-renderer-native-gles3.h',
+     'backends/native/meta-renderer-native-private.h',
+     'backends/native/meta-renderer-native.c',
+     'backends/native/meta-renderer-native.h',
+     'backends/native/meta-renderer-view-native.c',
+     'backends/native/meta-renderer-view-native.h',
+     'backends/native/meta-seat-impl.c',
+     'backends/native/meta-seat-impl.h',
+     'backends/native/meta-seat-native.c',
+     'backends/native/meta-seat-native.h',
+     'backends/native/meta-stage-native.c',
+     'backends/native/meta-stage-native.h',
+     'backends/native/meta-thread-impl.c',
+     'backends/native/meta-thread-impl.h',
+     'backends/native/meta-thread-private.h',
+     'backends/native/meta-thread.c',
+     'backends/native/meta-thread.h',
+-    'backends/native/meta-thread-private.h',
++    'backends/native/meta-thread-watcher.h',
++    'backends/native/meta-thread-watcher.c',
+     'backends/native/meta-udev.c',
+     'backends/native/meta-udev.h',
+     'backends/native/meta-virtual-input-device-native.c',
+     'backends/native/meta-virtual-input-device-native.h',
+     'backends/native/meta-virtual-monitor-native.c',
+     'backends/native/meta-virtual-monitor-native.h',
+     'backends/native/meta-xkb-utils.c',
+     'backends/native/meta-xkb-utils.h',
+     'compositor/meta-compositor-native.c',
+     'compositor/meta-compositor-native.h',
+     'compositor/meta-compositor-view-native.c',
+     'compositor/meta-compositor-view-native.h',
+   ]
+ endif
+ 
+ if have_wayland or have_native_backend
+   mutter_sources += [
+     'common/meta-cogl-drm-formats.c',
+     'common/meta-cogl-drm-formats.h',
+   ]
+ endif
+ 
+ if have_wayland_eglstream
+   mutter_sources += [
+     'wayland/meta-wayland-egl-stream.c',
+     'wayland/meta-wayland-egl-stream.h',
+   ]
+ endif
+ 
+ mutter_private_enum_sources = [
+-- 
+2.41.0
+

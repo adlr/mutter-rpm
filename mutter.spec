@@ -32,6 +32,10 @@ Patch2:        0001-place-Always-center-initial-setup-fedora-welcome.patch
 
 Patch4:        0001-gschema-Enable-scale-monitor-framebuffer-experimenta.patch
 
+Patch5:        0001-util-Add-way-to-print-backtraces.patch
+Patch6:        0002-clutter-Add-ms2ns-helper.patch
+Patch7:        0003-native-Stop-using-real-time-thread-if-it-stalls.patch
+
 BuildRequires: pkgconfig(gobject-introspection-1.0) >= 1.41.0
 BuildRequires: pkgconfig(sm)
 BuildRequires: pkgconfig(libwacom)
