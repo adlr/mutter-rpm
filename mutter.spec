@@ -179,6 +179,9 @@ the functionality of the installed %{name} package.
 %{_libdir}/mutter-%{mutter_api_version}/
 %{_libexecdir}/mutter-restart-helper
 %{_libexecdir}/mutter-x11-frames
+%{_libexecdir}/mutter-backtrace
+%{_datadir}/polkit-1/actions/org.gnome.mutter.backtrace.policy
+%{_datadir}/polkit-1/rules.d/50-mutter.rules
 %{_mandir}/man1/mutter.1*
 
 %files common
