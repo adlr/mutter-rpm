@@ -1,4 +1,4 @@
-From 2c78762dfe3dc05febe6be6408e4018be048159e Mon Sep 17 00:00:00 2001
+From 555d200c63051228062367316859e255abf6ab00 Mon Sep 17 00:00:00 2001
 From: Ray Strode <rstrode@redhat.com>
 Date: Fri, 29 Sep 2023 10:53:50 -0400
 Subject: [PATCH 2/3] clutter: Add ms2ns helper

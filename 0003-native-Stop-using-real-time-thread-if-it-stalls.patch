@@ -1,4 +1,4 @@
-From c49ff787cefa5917e8c6601624db414930b9b1d6 Mon Sep 17 00:00:00 2001
+From 637d2cfab9421fbcd87fef72f6ce7347b7722c13 Mon Sep 17 00:00:00 2001
 From: Ray Strode <rstrode@redhat.com>
 Date: Mon, 25 Sep 2023 22:29:17 +0200
 Subject: [PATCH 3/3] native: Stop using real-time thread if it stalls
@@ -452,7 +452,7 @@ index 000000000..439966ef2
 +}
 diff --git a/src/backends/native/meta-thread-watcher.h b/src/backends/native/meta-thread-watcher.h
 new file mode 100644
-index 000000000..21e48de2d
+index 000000000..fa6a1e4c8
 --- /dev/null
 +++ b/src/backends/native/meta-thread-watcher.h
 @@ -0,0 +1,36 @@
@@ -481,7 +481,7 @@ index 000000000..21e48de2d
 +G_DECLARE_FINAL_TYPE (MetaThreadWatcher, meta_thread_watcher,
 +                      META, THREAD_WATCHER, GObject)
 +
-+MetaThreadWatcher * meta_thread_watcher_new (void);
++MetaThreadWatcher *meta_thread_watcher_new (void);
 +void meta_thread_watcher_attach (MetaThreadWatcher *self,
 +                                 GMainContext      *context);
 +void meta_thread_watcher_detach (MetaThreadWatcher *self);
@@ -1002,7 +1002,7 @@ index 08d01144d..a4188ee56 100644
        MetaThreadCallbackData *callback_data = l->data;
  
 diff --git a/src/meson.build b/src/meson.build
-index 4aabb6a14..427cef4d0 100644
+index ea3614936..297aa8302 100644
 --- a/src/meson.build
 +++ b/src/meson.build
 @@ -828,61 +828,62 @@ if have_native_backend
