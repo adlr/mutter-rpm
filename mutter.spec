@@ -39,6 +39,9 @@ Patch7:        0003-native-Stop-using-real-time-thread-if-it-stalls.patch
 # https://gitlab.gnome.org/GNOME/mutter/-/merge_requests/3299
 Patch8:        3299.patch
 
+# https://gitlab.gnome.org/GNOME/mutter/-/merge_requests/3306
+Patch9:        3306.patch
+
 BuildRequires: pkgconfig(gobject-introspection-1.0) >= 1.41.0
 BuildRequires: pkgconfig(polkit-gobject-1)
 BuildRequires: pkgconfig(sm)
