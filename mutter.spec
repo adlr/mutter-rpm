@@ -42,6 +42,12 @@ Patch:         3299.patch
 # https://gitlab.gnome.org/GNOME/mutter/-/merge_requests/3306
 Patch:         3306.patch
 
+# https://bugzilla.redhat.com/show_bug.cgi?id=2239128
+# https://gitlab.gnome.org/GNOME/mutter/-/issues/3068
+# not upstreamed because for upstream we'd really want to find a way
+# to fix *both* problems
+Patch:         0001-Revert-x11-Use-input-region-from-frame-window-for-de.patch
+
 BuildRequires: pkgconfig(gobject-introspection-1.0) >= 1.41.0
 BuildRequires: pkgconfig(polkit-gobject-1)
 BuildRequires: pkgconfig(sm)
