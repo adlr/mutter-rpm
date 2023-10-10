@@ -48,6 +48,12 @@ Patch:         3306.patch
 # to fix *both* problems
 Patch:         0001-Revert-x11-Use-input-region-from-frame-window-for-de.patch
 
+# https://gitlab.gnome.org/GNOME/mutter/-/merge_requests/3324
+Patch: 0001-thread-Fix-preexisting-uncrustify-problem.patch
+Patch: 0002-thread-For-consistency-s-real_time-realtime.patch
+Patch: 0003-thread-Allow-turnning-off-rt-scheduling-for-running-.patch
+Patch: 0004-kms-impl-device-Inhibit-real-time-scheduling-when-mo.patch
+
 BuildRequires: pkgconfig(gobject-introspection-1.0) >= 1.41.0
 BuildRequires: pkgconfig(polkit-gobject-1)
 BuildRequires: pkgconfig(sm)

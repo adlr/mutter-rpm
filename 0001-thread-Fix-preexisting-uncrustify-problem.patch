@@ -1,0 +1,57 @@
+From 372a2ecda4c06170a85936e3b88c7fdd681cdca1 Mon Sep 17 00:00:00 2001
+From: Ray Strode <rstrode@redhat.com>
+Date: Tue, 10 Oct 2023 16:24:43 -0400
+Subject: [PATCH 1/4] thread: Fix preexisting uncrustify problem
+
+uncrustify seems to want a little more indentation, so this
+commit gives it what it's asking for.
+---
+ src/backends/native/meta-thread.h | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/src/backends/native/meta-thread.h b/src/backends/native/meta-thread.h
+index f6c5c94f5..9fc3588b9 100644
+--- a/src/backends/native/meta-thread.h
++++ b/src/backends/native/meta-thread.h
+@@ -72,35 +72,35 @@ void meta_thread_queue_callback (MetaThread         *thread,
+ 
+ META_EXPORT_TEST
+ void meta_thread_flush_callbacks (MetaThread *thread);
+ 
+ META_EXPORT_TEST
+ gpointer meta_thread_run_impl_task_sync (MetaThread          *thread,
+                                          MetaThreadTaskFunc   func,
+                                          gpointer             user_data,
+                                          GError             **error);
+ 
+ META_EXPORT_TEST
+ void meta_thread_post_impl_task (MetaThread                 *thread,
+                                  MetaThreadTaskFunc          func,
+                                  gpointer                    user_data,
+                                  GDestroyNotify              user_data_destroy,
+                                  MetaThreadTaskFeedbackFunc  feedback_func,
+                                  gpointer                    feedback_user_data);
+ 
+ META_EXPORT_TEST
+ MetaBackend * meta_thread_get_backend (MetaThread *thread);
+ 
+ META_EXPORT_TEST
+ const char * meta_thread_get_name (MetaThread *thread);
+ 
+ META_EXPORT_TEST
+ gboolean meta_thread_is_in_impl_task (MetaThread *thread);
+ 
+ gboolean meta_thread_is_waiting_for_impl_task (MetaThread *thread);
+ 
+ #define meta_assert_in_thread_impl(thread) \
+-  g_assert (meta_thread_is_in_impl_task (thread))
++        g_assert (meta_thread_is_in_impl_task (thread))
+ #define meta_assert_not_in_thread_impl(thread) \
+-  g_assert (!meta_thread_is_in_impl_task (thread))
++        g_assert (!meta_thread_is_in_impl_task (thread))
+ #define meta_assert_is_waiting_for_thread_impl_task(thread) \
+-  g_assert (meta_thread_is_waiting_for_impl_task (thread))
++        g_assert (meta_thread_is_waiting_for_impl_task (thread))
+-- 
+2.41.0
+
