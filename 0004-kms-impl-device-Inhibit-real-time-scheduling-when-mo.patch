@@ -1,4 +1,4 @@
-From 99be4ed7c3be19969930ce826f48c444e5e9da41 Mon Sep 17 00:00:00 2001
+From 105a3d60df5df74fd7ea78cacc0d9ca30607b45a Mon Sep 17 00:00:00 2001
 From: Ray Strode <rstrode@redhat.com>
 Date: Tue, 10 Oct 2023 14:48:55 -0400
 Subject: [PATCH 4/4] kms/impl-device: Inhibit real-time scheduling when mode

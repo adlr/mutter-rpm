@@ -1,7 +1,7 @@
-From c38064c9614b70e92a38e98df3ebd6b232ea2f55 Mon Sep 17 00:00:00 2001
+From a7c0f106b30137e1fc6159eaecee8e61b8dc48a9 Mon Sep 17 00:00:00 2001
 From: Ray Strode <rstrode@redhat.com>
 Date: Tue, 10 Oct 2023 14:39:13 -0400
-Subject: [PATCH 3/4] thread: Allow turnning off rt scheduling for running
+Subject: [PATCH 3/4] thread: Allow turning off rt scheduling for running
  thread
 
 At the moment if a thread is made real-time there's no going back,
@@ -21,15 +21,15 @@ so that it can be reused by the above apis.
 
 A subsequent commit will use the new APIs.
 ---
- src/backends/native/meta-thread.c | 174 ++++++++++++++++++++++++++----
- src/backends/native/meta-thread.h |   6 ++
- 2 files changed, 157 insertions(+), 23 deletions(-)
+ src/backends/native/meta-thread.c | 189 ++++++++++++++++++++++++++----
+ src/backends/native/meta-thread.h |   3 +
+ 2 files changed, 168 insertions(+), 24 deletions(-)
 
 diff --git a/src/backends/native/meta-thread.c b/src/backends/native/meta-thread.c
-index 93a84a8a5..f291c0b4a 100644
+index 93a84a8a5..1ed30441d 100644
 --- a/src/backends/native/meta-thread.c
 +++ b/src/backends/native/meta-thread.c
-@@ -56,62 +56,65 @@ typedef struct _MetaThreadCallbackSource
+@@ -56,62 +56,66 @@ typedef struct _MetaThreadCallbackSource
  
    GMutex mutex;
    GCond cond;
@@ -65,6 +65,7 @@ index 93a84a8a5..f291c0b4a 100644
 +    pid_t thread_id;
      GMutex init_mutex;
 +    int realtime_inhibit_count;
++    gboolean is_realtime;
    } kernel;
  } MetaThreadPrivate;
  
@@ -95,7 +96,7 @@ index 93a84a8a5..f291c0b4a 100644
                            guint       prop_id,
                            GValue     *value,
                            GParamSpec *pspec)
-@@ -175,181 +178,238 @@ get_rtkit_property (MetaDBusRealtimeKit1  *rtkit_proxy,
+@@ -175,181 +179,278 @@ get_rtkit_property (MetaDBusRealtimeKit1  *rtkit_proxy,
  {
    GDBusConnection *connection;
    g_autoptr (GVariant) prop_value = NULL;
@@ -265,22 +266,62 @@ index 93a84a8a5..f291c0b4a 100644
 +}
 +
 +static gboolean
-+meta_thread_uses_realtime_scheduling (MetaThread *thread)
++should_use_realtime_scheduling_in_impl (MetaThread *thread)
 +{
 +  MetaThreadPrivate *priv = meta_thread_get_instance_private (thread);
-+  gboolean uses_realtime_scheduling = FALSE;
++  gboolean should_use_realtime_scheduling = FALSE;
 +
 +  switch (priv->thread_type)
 +    {
 +    case META_THREAD_TYPE_USER:
 +      break;
 +    case META_THREAD_TYPE_KERNEL:
-+      if (priv->kernel.realtime_inhibit_count == 0)
-+        uses_realtime_scheduling = TRUE;
++      if (priv->wants_realtime && priv->kernel.realtime_inhibit_count == 0)
++        should_use_realtime_scheduling = TRUE;
 +      break;
 +    }
 +
-+  return uses_realtime_scheduling;
++  return should_use_realtime_scheduling;
++}
++
++static void
++sync_realtime_scheduling_in_impl (MetaThread *thread)
++{
++  MetaThreadPrivate *priv = meta_thread_get_instance_private (thread);
++  g_autoptr (GError) error = NULL;
++  gboolean should_be_realtime;
++
++  should_be_realtime = should_use_realtime_scheduling_in_impl (thread);
++
++  if (should_be_realtime == priv->kernel.is_realtime)
++    return;
++
++  if (should_be_realtime)
++    {
++      if (!request_realtime_scheduling (thread, &error))
++        {
++          g_warning ("Failed to make thread '%s' realtime scheduled: %s",
++                     priv->name, error->message);
++        }
++      else
++        {
++          meta_topic (META_DEBUG_BACKEND, "Made thread '%s' real-time scheduled", priv->name);
++          priv->kernel.is_realtime = TRUE;
++        }
++    }
++  else
++    {
++      if (!request_normal_scheduling (thread, &error))
++        {
++          g_warning ("Failed to make thread '%s' normally scheduled: %s",
++                     priv->name, error->message);
++        }
++      else
++        {
++          meta_topic (META_DEBUG_BACKEND, "Made thread '%s' normally scheduled", priv->name);
++          priv->kernel.is_realtime = FALSE;
++        }
++    }
 +}
 +
  static gpointer
@@ -305,13 +346,12 @@ index 93a84a8a5..f291c0b4a 100644
    meta_profiler_register_thread (profiler, thread_context, priv->name);
  #endif
  
-+  priv->kernel.thread_id = gettid ();
-+  priv->kernel.realtime_inhibit_count = 1;
-+
-   if (priv->wants_realtime)
+-  if (priv->wants_realtime)
 -    {
 -      g_autoptr (GError) error = NULL;
-+    meta_thread_uninhibit_realtime_in_impl (thread);
++  priv->kernel.thread_id = gettid ();
++  priv->kernel.realtime_inhibit_count = 0;
++  priv->kernel.is_realtime = FALSE;
  
 -      if (!request_realtime_scheduling (thread, &error))
 -        {
@@ -323,7 +363,9 @@ index 93a84a8a5..f291c0b4a 100644
 -          g_message ("Made thread '%s' realtime scheduled", priv->name);
 -          run_flags |= META_THREAD_IMPL_RUN_FLAG_REALTIME;
 -        }
-+  if (meta_thread_uses_realtime_scheduling (thread))
++  sync_realtime_scheduling_in_impl (thread);
++
++  if (priv->kernel.is_realtime)
 +    {
 +      g_message ("Made thread '%s' realtime scheduled", priv->name);
 +      run_flags |= META_THREAD_IMPL_RUN_FLAG_REALTIME;
@@ -357,7 +399,7 @@ index 93a84a8a5..f291c0b4a 100644
                          int     *timeout)
  {
    WrapperSource *wrapper_source = (WrapperSource *) source;
-@@ -522,60 +582,66 @@ meta_thread_initable_init (GInitable     *initable,
+@@ -522,60 +623,64 @@ meta_thread_initable_init (GInitable     *initable,
  
    start_thread (thread);
  
@@ -389,8 +431,6 @@ index 93a84a8a5..f291c0b4a 100644
    g_thread_join (priv->kernel.thread);
    priv->kernel.thread = NULL;
 +  priv->kernel.thread_id = 0;
-+
-+  priv->kernel.realtime_inhibit_count = -1;
 +
 +  g_clear_object (&priv->kernel.rtkit_proxy);
 +
@@ -424,70 +464,7 @@ index 93a84a8a5..f291c0b4a 100644
    tear_down_thread (thread);
  
    meta_thread_unregister_callback_context (thread, priv->main_context);
-@@ -618,60 +684,62 @@ meta_thread_class_init (MetaThreadClass *klass)
- 
-   obj_props[PROP_THREAD_TYPE] =
-     g_param_spec_enum ("thread-type",
-                        "thread-type",
-                        "Type of thread",
-                        META_TYPE_THREAD_TYPE,
-                        META_THREAD_TYPE_KERNEL,
-                        G_PARAM_READWRITE |
-                        G_PARAM_CONSTRUCT_ONLY |
-                        G_PARAM_STATIC_STRINGS);
- 
-   obj_props[PROP_WANTS_REALTIME] =
-     g_param_spec_boolean ("wants-realtime",
-                           "wants-realtime",
-                           "Wants real-time thread scheduling",
-                           FALSE,
-                           G_PARAM_READWRITE |
-                           G_PARAM_CONSTRUCT_ONLY |
-                           G_PARAM_STATIC_STRINGS);
- 
-   g_object_class_install_properties (object_class, N_PROPS, obj_props);
- }
- 
- static void
- meta_thread_init (MetaThread *thread)
- {
-   MetaThreadPrivate *priv = meta_thread_get_instance_private (thread);
- 
-   g_mutex_init (&priv->callbacks_mutex);
-   priv->main_thread = g_thread_self ();
-+
-+  priv->kernel.realtime_inhibit_count = -1;
- }
- 
- void
- meta_thread_class_register_impl_type (MetaThreadClass *thread_class,
-                                       GType            impl_type)
- {
-   MetaThreadClassPrivate *class_priv =
-     G_TYPE_CLASS_GET_PRIVATE (thread_class, META_TYPE_THREAD,
-                               MetaThreadClassPrivate);
- 
-   g_assert (class_priv->impl_type == G_TYPE_INVALID);
-   class_priv->impl_type = impl_type;
- }
- 
- void
- meta_thread_reset_thread_type (MetaThread     *thread,
-                                MetaThreadType  thread_type)
- {
-   MetaThreadPrivate *priv = meta_thread_get_instance_private (thread);
-   g_autoptr (GMainContext) thread_context = NULL;
- 
-   if (priv->thread_type == thread_type)
-     return;
- 
-   tear_down_thread (thread);
-   g_assert (!priv->wrapper_source);
- 
-   priv->thread_type = thread_type;
- 
-   start_thread (thread);
-@@ -1134,30 +1202,90 @@ meta_thread_get_thread_type (MetaThread *thread)
+@@ -1134,30 +1239,66 @@ meta_thread_get_thread_type (MetaThread *thread)
    MetaThreadPrivate *priv = meta_thread_get_instance_private (thread);
  
    return priv->thread_type;
@@ -523,7 +500,6 @@ index 93a84a8a5..f291c0b4a 100644
 +meta_thread_inhibit_realtime_in_impl (MetaThread *thread)
 +{
 +  MetaThreadPrivate *priv = meta_thread_get_instance_private (thread);
-+  g_autoptr (GError) error = NULL;
 +
 +  switch (priv->thread_type)
 +    {
@@ -531,18 +507,7 @@ index 93a84a8a5..f291c0b4a 100644
 +      priv->kernel.realtime_inhibit_count++;
 +
 +      if (priv->kernel.realtime_inhibit_count == 1)
-+        {
-+          if (!request_normal_scheduling (thread, &error))
-+            {
-+              g_warning ("Failed to make thread '%s' normally scheduled: %s",
-+                         priv->name, error->message);
-+              priv->kernel.realtime_inhibit_count--;
-+            }
-+          else
-+            {
-+              meta_topic (META_DEBUG_BACKEND, "Made thread '%s' normally scheduled", priv->name);
-+            }
-+        }
++        sync_realtime_scheduling_in_impl (thread);
 +      break;
 +    case META_THREAD_TYPE_USER:
 +      break;
@@ -553,7 +518,6 @@ index 93a84a8a5..f291c0b4a 100644
 +meta_thread_uninhibit_realtime_in_impl (MetaThread *thread)
 +{
 +  MetaThreadPrivate *priv = meta_thread_get_instance_private (thread);
-+  g_autoptr (GError) error = NULL;
 +
 +  switch (priv->thread_type)
 +    {
@@ -561,28 +525,17 @@ index 93a84a8a5..f291c0b4a 100644
 +      priv->kernel.realtime_inhibit_count--;
 +
 +      if (priv->kernel.realtime_inhibit_count == 0)
-+        {
-+          if (!request_realtime_scheduling (thread, &error))
-+            {
-+              g_warning ("Failed to make thread '%s' realtime scheduled: %s",
-+                         priv->name, error->message);
-+              priv->kernel.realtime_inhibit_count++;
-+            }
-+          else
-+            {
-+              meta_topic (META_DEBUG_BACKEND, "Made thread '%s' realtime scheduled", priv->name);
-+            }
-+        }
++        sync_realtime_scheduling_in_impl (thread);
 +      break;
 +    case META_THREAD_TYPE_USER:
 +      break;
 +    }
 +}
 diff --git a/src/backends/native/meta-thread.h b/src/backends/native/meta-thread.h
-index 9fc3588b9..96b79b586 100644
+index f6c5c94f5..4765719ec 100644
 --- a/src/backends/native/meta-thread.h
 +++ b/src/backends/native/meta-thread.h
-@@ -71,36 +71,42 @@ void meta_thread_queue_callback (MetaThread         *thread,
+@@ -71,36 +71,39 @@ void meta_thread_queue_callback (MetaThread         *thread,
                                   GDestroyNotify      user_data_destroy);
  
  META_EXPORT_TEST
@@ -613,18 +566,15 @@ index 9fc3588b9..96b79b586 100644
  
  gboolean meta_thread_is_waiting_for_impl_task (MetaThread *thread);
  
-+META_EXPORT_TEST
 +void meta_thread_inhibit_realtime_in_impl (MetaThread *thread);
-+
-+META_EXPORT_TEST
 +void meta_thread_uninhibit_realtime_in_impl (MetaThread *thread);
 +
  #define meta_assert_in_thread_impl(thread) \
-         g_assert (meta_thread_is_in_impl_task (thread))
+   g_assert (meta_thread_is_in_impl_task (thread))
  #define meta_assert_not_in_thread_impl(thread) \
-         g_assert (!meta_thread_is_in_impl_task (thread))
+   g_assert (!meta_thread_is_in_impl_task (thread))
  #define meta_assert_is_waiting_for_thread_impl_task(thread) \
-         g_assert (meta_thread_is_waiting_for_impl_task (thread))
+   g_assert (meta_thread_is_waiting_for_impl_task (thread))
 -- 
 2.41.0
 

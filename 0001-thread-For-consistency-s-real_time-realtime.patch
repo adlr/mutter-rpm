@@ -1,7 +1,7 @@
-From 39f55e7af76ee6a6339115a386a4b26f8318fed4 Mon Sep 17 00:00:00 2001
+From 01c01a221a7dabb2382a44b71dcf06649ee193d6 Mon Sep 17 00:00:00 2001
 From: Ray Strode <rstrode@redhat.com>
 Date: Tue, 10 Oct 2023 14:35:46 -0400
-Subject: [PATCH 2/4] thread: For consistency, s/real_time/realtime/
+Subject: [PATCH 1/4] thread: For consistency, s/real_time/realtime/
 
 Most of the code writes "real-time" as "realtime" not "real_time".
 
