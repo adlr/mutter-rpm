@@ -1,21 +1,18 @@
-From 156f988d3196bbab824236332c6e194323949141 Mon Sep 17 00:00:00 2001
-From: =?UTF-8?q?Jonas=20=C3=85dahl?= <jadahl@gmail.com>
-Date: Fri, 20 Oct 2023 15:44:29 +0800
-Subject: [PATCH 1/3] compositor/x11: Redirect subwindows after mapping COW
+From e20ebeefa42997fe65008b11ef771c71b697273c Mon Sep 17 00:00:00 2001
+From: Adam Williamson <awilliam@redhat.com>
+Date: Fri, 20 Oct 2023 22:12:23 -0700
+Subject: [PATCH] modified 3329
 
-This means we'll do it before any windows are mapped, and before any
-plugin implementation is started. Doing it before a plugin is started is
-important, because things that the plugin does during startup can have
-consequences on how compositing on Xorg works.
-
-Closes: https://gitlab.gnome.org/GNOME/mutter/-/issues/3089
+Signed-off-by: Adam Williamson <awilliam@redhat.com>
 ---
- src/compositor/meta-compositor-x11.c | 2 ++
- src/x11/meta-x11-display.c           | 1 -
- 2 files changed, 2 insertions(+), 1 deletion(-)
+ src/compositor/meta-compositor-x11.c |  2 ++
+ src/core/display.c                   | 34 ----------------------------
+ src/tests/x11-test.sh                |  3 +++
+ src/x11/meta-x11-display.c           | 30 +++++++++++++++++++++++-
+ 4 files changed, 34 insertions(+), 35 deletions(-)
 
 diff --git a/src/compositor/meta-compositor-x11.c b/src/compositor/meta-compositor-x11.c
-index 1ad3327ddf6..ce7bc1945ce 100644
+index 1ad3327dd..ce7bc1945 100644
 --- a/src/compositor/meta-compositor-x11.c
 +++ b/src/compositor/meta-compositor-x11.c
 @@ -188,6 +188,8 @@ meta_compositor_x11_manage (MetaCompositor  *compositor,
@@ -27,36 +24,8 @@ index 1ad3327ddf6..ce7bc1945ce 100644
    return TRUE;
  }
  
-diff --git a/src/x11/meta-x11-display.c b/src/x11/meta-x11-display.c
-index 4e98203dd25..c634a71fb2a 100644
---- a/src/x11/meta-x11-display.c
-+++ b/src/x11/meta-x11-display.c
-@@ -301,7 +301,6 @@ on_x11_display_opened (MetaX11Display *x11_display,
-                        MetaDisplay    *display)
- {
-   meta_display_manage_all_xwindows (display);
--  meta_x11_display_redirect_windows (x11_display, display);
- }
- 
- static void
--- 
-GitLab
-
-
-From a8484ffac70d8f1ee4af4ba7ab0ca8b197a0b918 Mon Sep 17 00:00:00 2001
-From: =?UTF-8?q?Jonas=20=C3=85dahl?= <jadahl@gmail.com>
-Date: Fri, 20 Oct 2023 17:03:31 +0800
-Subject: [PATCH 2/3] display: Move X11 initial focus handling to
- MetaX11Display
-
-It's X11 specific, so put it in the X11 display manager object.
----
- src/core/display.c         | 34 ----------------------------------
- src/x11/meta-x11-display.c | 25 +++++++++++++++++++++++++
- 2 files changed, 25 insertions(+), 34 deletions(-)
-
 diff --git a/src/core/display.c b/src/core/display.c
-index 0a191c0fbca..b16e50e21de 100644
+index 0a191c0fb..b16e50e21 100644
 --- a/src/core/display.c
 +++ b/src/core/display.c
 @@ -930,9 +930,6 @@ meta_display_new (MetaContext  *context,
@@ -115,11 +84,25 @@ index 0a191c0fbca..b16e50e21de 100644
  
    g_signal_connect (stage, "notify::is-grabbed",
                      G_CALLBACK (on_is_grabbed_changed), display);
+diff --git a/src/tests/x11-test.sh b/src/tests/x11-test.sh
+index 59e460fc3..d95b2460f 100755
+--- a/src/tests/x11-test.sh
++++ b/src/tests/x11-test.sh
+@@ -34,6 +34,9 @@ echo \# Launched with pid $MUTTER2_PID
+ MUTTER2_PID=$!
+ wait $MUTTER1_PID
+ 
++echo \# Waiting for the second mutter to finish loading
++gdbus wait --session org.gnome.Mutter.IdleMonitor
++
+ sleep 2
+ 
+ echo \# Terminating clients > /dev/stderr
 diff --git a/src/x11/meta-x11-display.c b/src/x11/meta-x11-display.c
-index c634a71fb2a..599968a363b 100644
+index 4e98203dd..4ca620410 100644
 --- a/src/x11/meta-x11-display.c
 +++ b/src/x11/meta-x11-display.c
-@@ -300,7 +300,32 @@ static void
+@@ -300,8 +300,36 @@ static void
  on_x11_display_opened (MetaX11Display *x11_display,
                         MetaDisplay    *display)
  {
@@ -133,7 +116,12 @@ index c634a71fb2a..599968a363b 100644
 +                            &old_active_xwindow);
 +    }
 +
++  if (meta_is_wayland_compositor ())
++    meta_x11_display_redirect_windows (x11_display, display);
++
++
    meta_display_manage_all_xwindows (display);
+-  meta_x11_display_redirect_windows (x11_display, display);
 +
 +  if (old_active_xwindow != None)
 +    {
@@ -153,39 +141,5 @@ index c634a71fb2a..599968a363b 100644
  
  static void
 -- 
-GitLab
-
-
-From 0fb2b0745bff693f024e9db15a26e86a548c1738 Mon Sep 17 00:00:00 2001
-From: =?UTF-8?q?Jonas=20=C3=85dahl?= <jadahl@gmail.com>
-Date: Tue, 17 Oct 2023 15:46:00 +0800
-Subject: [PATCH 3/3] tests/x11: Fix replace test to catch the second instance
- failing
-
-The test never noticed that the second instance never actually managed
-to load; it was looping a multi second retry session trying to redirect
-windows, meaning it failed to catch https://gitlab.gnome.org/GNOME/mutter/-/issues/3089.
-
-Fix the test so that it always waits for mutter to finish loading
-successfully, just like it waits fro the first.
----
- src/tests/x11-test.sh | 3 +++
- 1 file changed, 3 insertions(+)
-
-diff --git a/src/tests/x11-test.sh b/src/tests/x11-test.sh
-index 59e460fc336..d95b2460f6e 100755
---- a/src/tests/x11-test.sh
-+++ b/src/tests/x11-test.sh
-@@ -34,6 +34,9 @@ echo \# Launched with pid $MUTTER2_PID
- MUTTER2_PID=$!
- wait $MUTTER1_PID
- 
-+echo \# Waiting for the second mutter to finish loading
-+gdbus wait --session org.gnome.Mutter.IdleMonitor
-+
- sleep 2
- 
- echo \# Terminating clients > /dev/stderr
--- 
-GitLab
+2.41.0
 
