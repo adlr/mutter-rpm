@@ -1,0 +1,78 @@
+From 5809ef62f5e8b12a9cbaf8ec8efac814563bf13e Mon Sep 17 00:00:00 2001
+From: Robert Mader <robert.mader@collabora.com>
+Date: Fri, 13 Oct 2023 15:37:27 +0200
+Subject: [PATCH 1/2] screen-cast/stream-src: Calculate stride after adding
+ handle to hash table
+
+`calculate_stride()` looks up the dmabuf handle from the hash table so
+we need to add it first.
+
+Fixes 9b663f44e6044ece52c38b3ee23bbc2b55328b47
+
+Part-of: <https://gitlab.gnome.org/GNOME/mutter/-/merge_requests/3326>
+---
+ src/backends/meta-screen-cast-stream-src.c | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/src/backends/meta-screen-cast-stream-src.c b/src/backends/meta-screen-cast-stream-src.c
+index cf198cf6472..fd49c533930 100644
+--- a/src/backends/meta-screen-cast-stream-src.c
++++ b/src/backends/meta-screen-cast-stream-src.c
+@@ -1134,12 +1134,12 @@ on_stream_add_buffer (void             *data,
+       spa_data->flags = SPA_DATA_FLAG_READWRITE;
+       spa_data->fd = cogl_dma_buf_handle_get_fd (dmabuf_handle);
+ 
+-      stride = meta_screen_cast_stream_src_calculate_stride (src, spa_data);
+-      spa_data->maxsize = stride * priv->video_format.size.height;
+-
+       g_hash_table_insert (priv->dmabuf_handles,
+                            GINT_TO_POINTER (spa_data->fd),
+                            dmabuf_handle);
++
++      stride = meta_screen_cast_stream_src_calculate_stride (src, spa_data);
++      spa_data->maxsize = stride * priv->video_format.size.height;
+     }
+   else
+     {
+-- 
+GitLab
+
+
+From 8d3d8b86e517c97accf11eb243078faf31dd72bb Mon Sep 17 00:00:00 2001
+From: Robert Mader <robert.mader@collabora.com>
+Date: Fri, 13 Oct 2023 18:29:19 +0200
+Subject: [PATCH 2/2] screen-cast/stream-src: Assert that dmabuf handle lookup
+ succeeds
+
+To prevent issues like the one fixed in the previous commit.
+
+Also remove a redundant variable assignment.
+
+Part-of: <https://gitlab.gnome.org/GNOME/mutter/-/merge_requests/3326>
+---
+ src/backends/meta-screen-cast-stream-src.c | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/src/backends/meta-screen-cast-stream-src.c b/src/backends/meta-screen-cast-stream-src.c
+index fd49c533930..273c085d5b8 100644
+--- a/src/backends/meta-screen-cast-stream-src.c
++++ b/src/backends/meta-screen-cast-stream-src.c
+@@ -564,12 +564,12 @@ meta_screen_cast_stream_src_calculate_stride (MetaScreenCastStreamSrc *src,
+ 
+   if (spa_data->type == SPA_DATA_DmaBuf)
+     {
+-      CoglDmaBufHandle *dmabuf_handle = NULL;
++      CoglDmaBufHandle *dmabuf_handle;
+ 
+       dmabuf_handle = g_hash_table_lookup (priv->dmabuf_handles,
+                                            GINT_TO_POINTER (spa_data->fd));
+-      if (dmabuf_handle)
+-        return cogl_dma_buf_handle_get_stride (dmabuf_handle);
++      g_assert (dmabuf_handle != NULL);
++      return cogl_dma_buf_handle_get_stride (dmabuf_handle);
+     }
+ 
+   if (!cogl_pixel_format_from_spa_video_format (priv->video_format.format,
+-- 
+GitLab
+
