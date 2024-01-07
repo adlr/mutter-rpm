@@ -1,4 +1,4 @@
-From 0de15b2952e834c39298a4a415d0d30977a4a5b4 Mon Sep 17 00:00:00 2001
+From 299a0480fc04b7befcb768eeb98d187cf12487d1 Mon Sep 17 00:00:00 2001
 From: Adam Williamson <awilliam@redhat.com>
 Date: Thu, 5 Oct 2023 13:09:46 -0700
 Subject: [PATCH] Revert "x11: Use input region from frame window for decorated
@@ -15,7 +15,7 @@ Closes: https://gitlab.gnome.org/GNOME/mutter/-/issues/3068
  2 files changed, 10 insertions(+), 26 deletions(-)
 
 diff --git a/src/core/frame.c b/src/core/frame.c
-index 3d6e7ab78..bb62c848b 100644
+index 6b97306a1c..0f2eb349d1 100644
 --- a/src/core/frame.c
 +++ b/src/core/frame.c
 @@ -34,7 +34,6 @@
@@ -47,10 +47,10 @@ index 3d6e7ab78..bb62c848b 100644
                     window->xwindow,
                     x11_display->atom__MUTTER_NEEDS_FRAME);
 diff --git a/src/x11/window-x11.c b/src/x11/window-x11.c
-index 7ae5d8059..f7512bc10 100644
+index ce6dcf968b..7574948aed 100644
 --- a/src/x11/window-x11.c
 +++ b/src/x11/window-x11.c
-@@ -2118,10 +2118,6 @@ meta_window_x11_constructed (GObject *object)
+@@ -2027,10 +2027,6 @@ meta_window_x11_constructed (GObject *object)
    window->hidden = FALSE;
    priv->border_width = attrs.border_width;
  
@@ -61,8 +61,8 @@ index 7ae5d8059..f7512bc10 100644
    G_OBJECT_CLASS (meta_window_x11_parent_class)->constructed (object);
  }
  
-@@ -2430,21 +2426,16 @@ meta_window_x11_update_input_region (MetaWindow *window)
-   cairo_region_t *region = NULL;
+@@ -2314,21 +2310,16 @@ meta_window_x11_update_input_region (MetaWindow *window)
+   g_autoptr (MtkRegion) region = NULL;
    MetaWindowX11 *window_x11 = META_WINDOW_X11 (window);
    MetaWindowX11Private *priv = meta_window_x11_get_instance_private (window_x11);
 -  Window xwindow;
@@ -90,7 +90,7 @@ index 7ae5d8059..f7512bc10 100644
      }
  
    if (META_X11_DISPLAY_HAS_SHAPE (x11_display))
-@@ -2456,7 +2447,7 @@ meta_window_x11_update_input_region (MetaWindow *window)
+@@ -2340,7 +2331,7 @@ meta_window_x11_update_input_region (MetaWindow *window)
  
        meta_x11_error_trap_push (x11_display);
        rects = XShapeGetRectangles (x11_display->xdisplay,
@@ -99,7 +99,7 @@ index 7ae5d8059..f7512bc10 100644
                                     ShapeInput,
                                     &n_rects,
                                     &ordering);
-@@ -2510,8 +2501,8 @@ meta_window_x11_update_input_region (MetaWindow *window)
+@@ -2394,8 +2385,8 @@ meta_window_x11_update_input_region (MetaWindow *window)
  
        client_area.x = 0;
        client_area.y = 0;
@@ -111,5 +111,5 @@ index 7ae5d8059..f7512bc10 100644
        /* The shape we get back from the client may have coordinates
         * outside of the frame. The X SHAPE Extension requires that
 -- 
-2.41.0
+2.43.0
 
