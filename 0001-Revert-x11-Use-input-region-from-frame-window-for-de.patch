@@ -1,4 +1,4 @@
-From 299a0480fc04b7befcb768eeb98d187cf12487d1 Mon Sep 17 00:00:00 2001
+From 264bd8c2b7dab84d0f0e11ad6b99d8d5de4c5e08 Mon Sep 17 00:00:00 2001
 From: Adam Williamson <awilliam@redhat.com>
 Date: Thu, 5 Oct 2023 13:09:46 -0700
 Subject: [PATCH] Revert "x11: Use input region from frame window for decorated
@@ -15,10 +15,10 @@ Closes: https://gitlab.gnome.org/GNOME/mutter/-/issues/3068
  2 files changed, 10 insertions(+), 26 deletions(-)
 
 diff --git a/src/core/frame.c b/src/core/frame.c
-index 6b97306a1c..0f2eb349d1 100644
+index 9417685706..2193f1fba2 100644
 --- a/src/core/frame.c
 +++ b/src/core/frame.c
-@@ -34,7 +34,6 @@
+@@ -35,7 +35,6 @@
  #include "x11/window-props.h"
  
  #include <X11/Xatom.h>
@@ -26,7 +26,7 @@ index 6b97306a1c..0f2eb349d1 100644
  
  #define EVENT_MASK (SubstructureRedirectMask |                     \
                      StructureNotifyMask | SubstructureNotifyMask | \
-@@ -108,9 +107,6 @@ meta_window_set_frame_xwindow (MetaWindow *window,
+@@ -109,9 +108,6 @@ meta_window_set_frame_xwindow (MetaWindow *window,
    XChangeWindowAttributes (x11_display->xdisplay,
  			   frame->xwindow, CWEventMask, &attrs);
  
@@ -36,7 +36,7 @@ index 6b97306a1c..0f2eb349d1 100644
    meta_x11_display_register_x_window (x11_display, &frame->xwindow, window);
  
    if (window->mapped)
-@@ -219,9 +215,6 @@ meta_window_destroy_frame (MetaWindow *window)
+@@ -220,9 +216,6 @@ meta_window_destroy_frame (MetaWindow *window)
        window->reparents_pending += 1;
      }
  
@@ -44,15 +44,15 @@ index 6b97306a1c..0f2eb349d1 100644
 -    XShapeSelectInput (x11_display->xdisplay, frame->xwindow, NoEventMask);
 -
    XDeleteProperty (x11_display->xdisplay,
-                    window->xwindow,
+                    meta_window_x11_get_xwindow (window),
                     x11_display->atom__MUTTER_NEEDS_FRAME);
 diff --git a/src/x11/window-x11.c b/src/x11/window-x11.c
-index ce6dcf968b..7574948aed 100644
+index 95b6b55a02..a1890bb023 100644
 --- a/src/x11/window-x11.c
 +++ b/src/x11/window-x11.c
-@@ -2027,10 +2027,6 @@ meta_window_x11_constructed (GObject *object)
-   window->hidden = FALSE;
+@@ -2087,10 +2087,6 @@ meta_window_x11_constructed (GObject *object)
    priv->border_width = attrs.border_width;
+   priv->xclient_leader = None;
  
 -  g_signal_connect (window, "notify::decorated",
 -                    G_CALLBACK (meta_window_x11_update_input_region),
@@ -61,7 +61,7 @@ index ce6dcf968b..7574948aed 100644
    G_OBJECT_CLASS (meta_window_x11_parent_class)->constructed (object);
  }
  
-@@ -2314,21 +2310,16 @@ meta_window_x11_update_input_region (MetaWindow *window)
+@@ -2386,21 +2382,16 @@ meta_window_x11_update_input_region (MetaWindow *window)
    g_autoptr (MtkRegion) region = NULL;
    MetaWindowX11 *window_x11 = META_WINDOW_X11 (window);
    MetaWindowX11Private *priv = meta_window_x11_get_instance_private (window_x11);
@@ -83,23 +83,23 @@ index ce6dcf968b..7574948aed 100644
 -    }
 -  else
 -    {
--      xwindow = window->xwindow;
+-      xwindow = priv->xwindow;
 +      if (window->input_region)
 +        meta_window_set_input_region (window, NULL);
 +      return;
      }
  
    if (META_X11_DISPLAY_HAS_SHAPE (x11_display))
-@@ -2340,7 +2331,7 @@ meta_window_x11_update_input_region (MetaWindow *window)
+@@ -2412,7 +2403,7 @@ meta_window_x11_update_input_region (MetaWindow *window)
  
-       meta_x11_error_trap_push (x11_display);
+       mtk_x11_error_trap_push (x11_display->xdisplay);
        rects = XShapeGetRectangles (x11_display->xdisplay,
 -                                   xwindow,
-+                                   window->xwindow,
++                                   priv->xwindow,
                                     ShapeInput,
                                     &n_rects,
                                     &ordering);
-@@ -2394,8 +2385,8 @@ meta_window_x11_update_input_region (MetaWindow *window)
+@@ -2466,8 +2457,8 @@ meta_window_x11_update_input_region (MetaWindow *window)
  
        client_area.x = 0;
        client_area.y = 0;
