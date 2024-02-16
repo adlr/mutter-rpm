@@ -30,8 +30,6 @@ Patch:         mutter-42.alpha-disable-tegra.patch
 # https://pagure.io/fedora-workstation/issue/79
 Patch:         0001-place-Always-center-initial-setup-fedora-welcome.patch
 
-Patch:         0001-gschema-Enable-scale-monitor-framebuffer-experimenta.patch
-
 # https://bugzilla.redhat.com/show_bug.cgi?id=2239128
 # https://gitlab.gnome.org/GNOME/mutter/-/issues/3068
 # not upstreamed because for upstream we'd really want to find a way
