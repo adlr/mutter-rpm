@@ -1,4 +1,4 @@
-From 264bd8c2b7dab84d0f0e11ad6b99d8d5de4c5e08 Mon Sep 17 00:00:00 2001
+From 1d5c47f8970c2027de5f6fa49b84de73d55b419b Mon Sep 17 00:00:00 2001
 From: Adam Williamson <awilliam@redhat.com>
 Date: Thu, 5 Oct 2023 13:09:46 -0700
 Subject: [PATCH] Revert "x11: Use input region from frame window for decorated
@@ -15,7 +15,7 @@ Closes: https://gitlab.gnome.org/GNOME/mutter/-/issues/3068
  2 files changed, 10 insertions(+), 26 deletions(-)
 
 diff --git a/src/core/frame.c b/src/core/frame.c
-index 9417685706..2193f1fba2 100644
+index 145f0b7bd7..1c90ce4231 100644
 --- a/src/core/frame.c
 +++ b/src/core/frame.c
 @@ -35,7 +35,6 @@
@@ -26,7 +26,7 @@ index 9417685706..2193f1fba2 100644
  
  #define EVENT_MASK (SubstructureRedirectMask |                     \
                      StructureNotifyMask | SubstructureNotifyMask | \
-@@ -109,9 +108,6 @@ meta_window_set_frame_xwindow (MetaWindow *window,
+@@ -109,9 +108,6 @@ meta_window_x11_set_frame_xwindow (MetaWindow *window,
    XChangeWindowAttributes (x11_display->xdisplay,
  			   frame->xwindow, CWEventMask, &attrs);
  
@@ -47,12 +47,12 @@ index 9417685706..2193f1fba2 100644
                     meta_window_x11_get_xwindow (window),
                     x11_display->atom__MUTTER_NEEDS_FRAME);
 diff --git a/src/x11/window-x11.c b/src/x11/window-x11.c
-index 95b6b55a02..a1890bb023 100644
+index 745c45db18..8edff883c9 100644
 --- a/src/x11/window-x11.c
 +++ b/src/x11/window-x11.c
-@@ -2087,10 +2087,6 @@ meta_window_x11_constructed (GObject *object)
-   priv->border_width = attrs.border_width;
-   priv->xclient_leader = None;
+@@ -2082,10 +2082,6 @@ meta_window_x11_constructed (GObject *object)
+   priv->keys_grabbed = FALSE;
+   priv->grab_on_frame = FALSE;
  
 -  g_signal_connect (window, "notify::decorated",
 -                    G_CALLBACK (meta_window_x11_update_input_region),
@@ -61,7 +61,7 @@ index 95b6b55a02..a1890bb023 100644
    G_OBJECT_CLASS (meta_window_x11_parent_class)->constructed (object);
  }
  
-@@ -2386,21 +2382,16 @@ meta_window_x11_update_input_region (MetaWindow *window)
+@@ -2400,21 +2396,16 @@ meta_window_x11_update_input_region (MetaWindow *window)
    g_autoptr (MtkRegion) region = NULL;
    MetaWindowX11 *window_x11 = META_WINDOW_X11 (window);
    MetaWindowX11Private *priv = meta_window_x11_get_instance_private (window_x11);
@@ -75,7 +75,7 @@ index 95b6b55a02..a1890bb023 100644
      {
 -      if (!window->frame)
 -        {
--          if (window->input_region)
+-          if (priv->input_region)
 -            meta_window_set_input_region (window, NULL);
 -          return;
 -        }
@@ -84,13 +84,13 @@ index 95b6b55a02..a1890bb023 100644
 -  else
 -    {
 -      xwindow = priv->xwindow;
-+      if (window->input_region)
++      if (priv->input_region)
 +        meta_window_set_input_region (window, NULL);
 +      return;
      }
  
    if (META_X11_DISPLAY_HAS_SHAPE (x11_display))
-@@ -2412,7 +2403,7 @@ meta_window_x11_update_input_region (MetaWindow *window)
+@@ -2426,7 +2417,7 @@ meta_window_x11_update_input_region (MetaWindow *window)
  
        mtk_x11_error_trap_push (x11_display->xdisplay);
        rects = XShapeGetRectangles (x11_display->xdisplay,
@@ -99,7 +99,7 @@ index 95b6b55a02..a1890bb023 100644
                                     ShapeInput,
                                     &n_rects,
                                     &ordering);
-@@ -2466,8 +2457,8 @@ meta_window_x11_update_input_region (MetaWindow *window)
+@@ -2480,8 +2471,8 @@ meta_window_x11_update_input_region (MetaWindow *window)
  
        client_area.x = 0;
        client_area.y = 0;
@@ -111,5 +111,5 @@ index 95b6b55a02..a1890bb023 100644
        /* The shape we get back from the client may have coordinates
         * outside of the frame. The X SHAPE Extension requires that
 -- 
-2.43.0
+2.43.2
 
