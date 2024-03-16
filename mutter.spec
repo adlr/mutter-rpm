@@ -13,7 +13,7 @@
 %global tarball_version %%(echo %{version} | tr '~' '.')
 
 Name:          mutter
-Version:       46~rc
+Version:       46.0
 Release:       %autorelease
 Summary:       Window and compositing manager based on Clutter
 
@@ -41,10 +41,6 @@ Patch:         0001-Revert-x11-Use-input-region-from-frame-window-for-de.patch
 # https://gitlab.gnome.org/GNOME/mutter/-/merge_requests/3329#note_1874837
 # which solves the problems reported with #3329 alone
 Patch: 0001-modified-3329.patch
-
-# https://gitlab.gnome.org/GNOME/mutter/-/merge_requests/3642
-# Fix mouse wheel scrolling
-Patch: 3642.patch
 
 BuildRequires: pkgconfig(gobject-introspection-1.0) >= 1.41.0
 BuildRequires: pkgconfig(sm)
