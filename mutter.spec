@@ -70,6 +70,7 @@ BuildRequires: mesa-libgbm-devel
 BuildRequires: pkgconfig(glesv2)
 BuildRequires: pkgconfig(graphene-gobject-1.0)
 BuildRequires: pam-devel
+BuildRequires: pkgconfig(libdisplay-info)
 BuildRequires: pkgconfig(libpipewire-0.3) >= %{pipewire_version}
 BuildRequires: pkgconfig(sysprof-capture-4)
 BuildRequires: sysprof-devel
@@ -175,7 +176,7 @@ the functionality of the installed %{name} package.
 %autosetup -S git -n %{name}-%{tarball_version}
 
 %build
-%meson -Degl_device=true -Dwayland_eglstream=true -Dlibdisplay_info=disabled
+%meson -Degl_device=true -Dwayland_eglstream=true
 %meson_build
 
 %install
