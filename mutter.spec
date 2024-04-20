@@ -14,7 +14,7 @@
 
 Name:          mutter
 Version:       46.0
-Release:       %autorelease
+Release:       1%{?dist}.adlr
 Summary:       Window and compositing manager based on Clutter
 
 License:       GPLv2+
@@ -41,6 +41,8 @@ Patch:         0001-Revert-x11-Use-input-region-from-frame-window-for-de.patch
 # https://gitlab.gnome.org/GNOME/mutter/-/merge_requests/3329#note_1874837
 # which solves the problems reported with #3329 alone
 Patch: 0001-modified-3329.patch
+
+Patch: adlr.patch
 
 BuildRequires: pkgconfig(gobject-introspection-1.0) >= 1.41.0
 BuildRequires: pkgconfig(sm)
