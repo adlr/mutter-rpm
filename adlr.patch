@@ -1,7 +1,118 @@
-From 5c627ae7cfb6aa4d30bc6c45b8785404ca1fc9d1 Mon Sep 17 00:00:00 2001
+From 4710143434fb3b3dd46caee096c237c8a390944b Mon Sep 17 00:00:00 2001
+From: Andrew de los Reyes <adlr@gmail.com>
+Date: Sat, 20 Apr 2024 19:23:46 -0700
+Subject: [PATCH 1/8] ClutterEvent: Allow setting scroll delta on event
+
+---
+ clutter/clutter/clutter-event.c | 22 ++++++++++++++++++++++
+ clutter/clutter/clutter-event.h |  4 ++++
+ 2 files changed, 26 insertions(+)
+
+diff --git a/clutter/clutter/clutter-event.c b/clutter/clutter/clutter-event.c
+index bcda1bb7b..e0769d472 100644
+--- a/clutter/clutter/clutter-event.c
++++ b/clutter/clutter/clutter-event.c
+@@ -566,6 +566,28 @@ clutter_event_get_related (const ClutterEvent *event)
+   return event->crossing.related;
+ }
+ 
++/**
++ * clutter_event_set_scroll_delta:
++ * @event: a #ClutterEvent of type %CLUTTER_SCROLL
++ * @dx: delta on the horizontal axis
++ * @dy: delta on the vertical axis
++ *
++ * Sets the precise scrolling information of @event.
++ */
++void
++clutter_event_set_scroll_delta (ClutterEvent *event,
++                                gdouble       dx,
++                                gdouble       dy)
++{
++  g_return_if_fail (event != NULL);
++  g_return_if_fail (event->type == CLUTTER_SCROLL);
++
++  event->scroll.direction = CLUTTER_SCROLL_SMOOTH;
++
++  event->scroll.delta_x = dx;
++  event->scroll.delta_y = dy;
++}
++
+ /**
+  * clutter_event_get_scroll_delta:
+  * @event: a #ClutterEvent of type %CLUTTER_SCROLL
+diff --git a/clutter/clutter/clutter-event.h b/clutter/clutter/clutter-event.h
+index 62f244c05..af097052b 100644
+--- a/clutter/clutter/clutter-event.h
++++ b/clutter/clutter/clutter-event.h
+@@ -214,6 +214,10 @@ ClutterActor *          clutter_event_get_related               (const ClutterEv
+ CLUTTER_EXPORT
+ ClutterScrollDirection  clutter_event_get_scroll_direction      (const ClutterEvent     *event);
+ CLUTTER_EXPORT
++void                    clutter_event_set_scroll_delta          (ClutterEvent           *event,
++                                                                 gdouble                 dx,
++                                                                 gdouble                 dy);
++CLUTTER_EXPORT
+ void                    clutter_event_get_scroll_delta          (const ClutterEvent     *event,
+                                                                  gdouble                *dx,
+                                                                  gdouble                *dy);
+-- 
+2.44.0
+
+
+From f802f259ed5808b4acd1c818c86db034520318b2 Mon Sep 17 00:00:00 2001
+From: Andrew de los Reyes <adlr@gmail.com>
+Date: Sat, 20 Apr 2024 19:40:11 -0700
+Subject: [PATCH 2/8] ClutterEvent: Allow setting finish flags
+
+---
+ clutter/clutter/clutter-event.c | 9 +++++++++
+ clutter/clutter/clutter-event.h | 4 ++++
+ 2 files changed, 13 insertions(+)
+
+diff --git a/clutter/clutter/clutter-event.c b/clutter/clutter/clutter-event.c
+index e0769d472..1e445631d 100644
+--- a/clutter/clutter/clutter-event.c
++++ b/clutter/clutter/clutter-event.c
+@@ -1592,6 +1592,15 @@ clutter_event_get_scroll_source (const ClutterEvent *event)
+   return event->scroll.scroll_source;
+ }
+ 
++void
++clutter_event_set_scroll_finish_flags (ClutterEvent *event,
++                                       ClutterScrollFinishFlags finish_flags)
++{
++  g_return_if_fail (event != NULL);
++  g_return_if_fail (event->type == CLUTTER_SCROLL);
++
++  event->scroll.finish_flags = finish_flags;
++}
+ /**
+  * clutter_event_get_scroll_finish_flags:
+  * @event: an scroll event
+diff --git a/clutter/clutter/clutter-event.h b/clutter/clutter/clutter-event.h
+index af097052b..6672904d4 100644
+--- a/clutter/clutter/clutter-event.h
++++ b/clutter/clutter/clutter-event.h
+@@ -260,6 +260,10 @@ void                    clutter_event_get_gesture_motion_delta_unaccelerated (co
+ CLUTTER_EXPORT
+ ClutterScrollSource      clutter_event_get_scroll_source             (const ClutterEvent     *event);
+ 
++CLUTTER_EXPORT
++void                     clutter_event_set_scroll_finish_flags       (ClutterEvent             *event,
++                                                                      ClutterScrollFinishFlags  finish_flags);
++
+ CLUTTER_EXPORT
+ ClutterScrollFinishFlags clutter_event_get_scroll_finish_flags       (const ClutterEvent     *event);
+ 
+-- 
+2.44.0
+
+
+From 8b73278325133b8855d9f800270a373e4f998671 Mon Sep 17 00:00:00 2001
 From: Andrew de los Reyes <adlr@rivosinc.com>
 Date: Sat, 29 Apr 2023 20:11:51 -0700
-Subject: [PATCH 01/11] Draft: test fixes to avoid struts covering maximized
+Subject: [PATCH 3/8] Draft: test fixes to avoid struts covering maximized
  windows.
 
 window.c: Don't let the ACK from a configuration change from the
@@ -60,10 +171,10 @@ index 354183106..1a36306c4 100644
 2.44.0
 
 
-From ba3c961df772a68bd8a75c97c5af8f7e54727149 Mon Sep 17 00:00:00 2001
+From 3e168bb8eb9390cac81979e5c980dd4543471e9f Mon Sep 17 00:00:00 2001
 From: Andrew de los Reyes <adlr@rivosinc.com>
 Date: Sun, 19 Feb 2023 09:14:26 -0800
-Subject: [PATCH 02/11] adlr: hide mouse cursor when typing
+Subject: [PATCH 4/8] adlr: hide mouse cursor when typing
 
 show mouse cursor on any mouse event.
 
@@ -78,7 +189,7 @@ downstream.
  1 file changed, 11 insertions(+)
 
 diff --git a/src/backends/meta-backend.c b/src/backends/meta-backend.c
-index 0fb880fab..47fffec60 100644
+index 0fb880fab..6c449f554 100644
 --- a/src/backends/meta-backend.c
 +++ b/src/backends/meta-backend.c
 @@ -50,6 +50,7 @@
@@ -97,7 +208,7 @@ index 0fb880fab..47fffec60 100644
 +      /*             clutter_event_get_state(event), */
 +      /*             clutter_event_get_key_unicode(event), */
 +      /*             clutter_event_get_event_code(event)); */
-+      if (event->type == CLUTTER_KEY_PRESS &&
++      if (clutter_event_type(event) == CLUTTER_KEY_PRESS &&
 +          clutter_event_get_state(event) <= 1 &&  // Modifiers: none or just shift
 +          (clutter_event_get_key_unicode(event) > 0 ||  // Key: has some text or is escape OR
 +           (clutter_event_get_event_code(event) >= KEY_LINEFEED &&  // key is a nav key
@@ -110,10 +221,10 @@ index 0fb880fab..47fffec60 100644
 2.44.0
 
 
-From 6ded2e721f5028763bc0515b26a374745dc889bd Mon Sep 17 00:00:00 2001
+From 8c5a98083cb3217c43e4a96ddc70415402e67580 Mon Sep 17 00:00:00 2001
 From: Andrew de los Reyes <adlr@rivosinc.com>
 Date: Sun, 26 Feb 2023 19:52:49 -0800
-Subject: [PATCH 03/11] adlr: hacks to slow down Chrome scroll speed and honor
+Subject: [PATCH 5/8] adlr: hacks to slow down Chrome scroll speed and honor
  scroll stops
 
 ---
@@ -121,14 +232,14 @@ Subject: [PATCH 03/11] adlr: hacks to slow down Chrome scroll speed and honor
  1 file changed, 28 insertions(+)
 
 diff --git a/src/core/events.c b/src/core/events.c
-index f766b806d..8170b2e84 100644
+index f766b806d..9de387780 100644
 --- a/src/core/events.c
 +++ b/src/core/events.c
 @@ -358,6 +358,34 @@ meta_display_handle_event (MetaDisplay        *display,
      }
  
    window = get_window_for_event (display, event, event_actor);
-+  if (window && event->type == CLUTTER_SCROLL &&
++  if (window && clutter_event_type(event) == CLUTTER_SCROLL &&
 +      clutter_event_get_scroll_direction(event) == CLUTTER_SCROLL_SMOOTH) {
 +    const char* text = meta_window_get_wm_class(window);
 +    gdouble dx, dy;
@@ -149,8 +260,8 @@ index f766b806d..8170b2e84 100644
 +        dx = 0;
 +      }
 +      // Const cast -- yucky
-+      ((ClutterEvent*)event)->scroll.finish_flags =
-+        CLUTTER_SCROLL_FINISHED_NONE;
++      clutter_event_set_scroll_finish_flags((ClutterEvent*)event,
++                                            CLUTTER_SCROLL_FINISHED_NONE);
 +    }
 +
 +    // Const cast -- yucky
@@ -163,10 +274,10 @@ index f766b806d..8170b2e84 100644
 2.44.0
 
 
-From 471162a0029910c1a2411b3a42e15aa952ea9982 Mon Sep 17 00:00:00 2001
+From 3c7c11050ec72c903c16ed83eb1d1d62f4287cb2 Mon Sep 17 00:00:00 2001
 From: Aleksandr Mezin <mezin.alexander@gmail.com>
 Date: Fri, 5 Mar 2021 14:38:57 +0600
-Subject: [PATCH 04/11] wayland/window: Correct detection whether to send
+Subject: [PATCH 6/8] wayland/window: Correct detection whether to send
  `configure`
 
 When deciding if `configure` event should be sent,
@@ -278,10 +389,10 @@ index a02224e55..c1d08a3c4 100644
 2.44.0
 
 
-From 808d196020404e63181bda019e22fa73a80e55a9 Mon Sep 17 00:00:00 2001
+From 5e29dc3edc6fcc8159bad519699d2458aaa4e197 Mon Sep 17 00:00:00 2001
 From: Andrew de los Reyes <adlr@rivosinc.com>
 Date: Sat, 6 May 2023 15:21:21 -0700
-Subject: [PATCH 05/11] adlr: debug info
+Subject: [PATCH 7/8] adlr: debug info
 
 ---
  src/compositor/meta-window-drag.c |  7 +++++
@@ -503,10 +614,10 @@ index 63bd90f98..7c2c55131 100644
 2.44.0
 
 
-From d57bb42da56701725bb94cbfecc971f6f3abe023 Mon Sep 17 00:00:00 2001
+From 8492a71617328d20fb4aa5d3ff29d95915b846e9 Mon Sep 17 00:00:00 2001
 From: Andrew de los Reyes <adlr@rivosinc.com>
 Date: Sat, 13 May 2023 13:26:10 -0700
-Subject: [PATCH 06/11] adlr: try fix for slow-resize on left
+Subject: [PATCH 8/8] adlr: try fix for slow-resize on left
 
 ---
  src/wayland/meta-window-wayland.c | 2 ++
@@ -525,197 +636,6 @@ index 7c2c55131..be5f1c244 100644
                 flags & META_MOVE_RESIZE_STATE_CHANGED)
          {
            MetaWaylandWindowConfiguration *configuration;
--- 
-2.44.0
-
-
-From e8ca65ce8859d05869a8a696853d53c76a5f0ff6 Mon Sep 17 00:00:00 2001
-From: Andrew de los Reyes <adlr@gmail.com>
-Date: Sat, 20 Apr 2024 14:28:41 -0700
-Subject: [PATCH 07/11] test fixes
-
----
- src/backends/meta-backend.c | 2 +-
- 1 file changed, 1 insertion(+), 1 deletion(-)
-
-diff --git a/src/backends/meta-backend.c b/src/backends/meta-backend.c
-index 47fffec60..6c449f554 100644
---- a/src/backends/meta-backend.c
-+++ b/src/backends/meta-backend.c
-@@ -1114,7 +1114,7 @@ update_pointer_visibility_from_event (MetaBackend  *backend,
-       /*             clutter_event_get_state(event), */
-       /*             clutter_event_get_key_unicode(event), */
-       /*             clutter_event_get_event_code(event)); */
--      if (event->type == CLUTTER_KEY_PRESS &&
-+      if (clutter_event_type(event) == CLUTTER_KEY_PRESS &&
-           clutter_event_get_state(event) <= 1 &&  // Modifiers: none or just shift
-           (clutter_event_get_key_unicode(event) > 0 ||  // Key: has some text or is escape OR
-            (clutter_event_get_event_code(event) >= KEY_LINEFEED &&  // key is a nav key
--- 
-2.44.0
-
-
-From 3739f4ab557c523b77f99ebbd19fee778fba5ba1 Mon Sep 17 00:00:00 2001
-From: Andrew de los Reyes <adlr@gmail.com>
-Date: Sat, 20 Apr 2024 19:23:35 -0700
-Subject: [PATCH 08/11] fix getting event type
-
----
- src/core/events.c | 2 +-
- 1 file changed, 1 insertion(+), 1 deletion(-)
-
-diff --git a/src/core/events.c b/src/core/events.c
-index 8170b2e84..29dc7291e 100644
---- a/src/core/events.c
-+++ b/src/core/events.c
-@@ -358,7 +358,7 @@ meta_display_handle_event (MetaDisplay        *display,
-     }
- 
-   window = get_window_for_event (display, event, event_actor);
--  if (window && event->type == CLUTTER_SCROLL &&
-+  if (window && clutter_event_type(event) == CLUTTER_SCROLL &&
-       clutter_event_get_scroll_direction(event) == CLUTTER_SCROLL_SMOOTH) {
-     const char* text = meta_window_get_wm_class(window);
-     gdouble dx, dy;
--- 
-2.44.0
-
-
-From 58ae05aa413634126ddb38cd07674753f7bc3dbd Mon Sep 17 00:00:00 2001
-From: Andrew de los Reyes <adlr@gmail.com>
-Date: Sat, 20 Apr 2024 19:23:46 -0700
-Subject: [PATCH 09/11] Allow setting scroll delta on event
-
----
- clutter/clutter/clutter-event.c | 22 ++++++++++++++++++++++
- clutter/clutter/clutter-event.h |  4 ++++
- 2 files changed, 26 insertions(+)
-
-diff --git a/clutter/clutter/clutter-event.c b/clutter/clutter/clutter-event.c
-index bcda1bb7b..e0769d472 100644
---- a/clutter/clutter/clutter-event.c
-+++ b/clutter/clutter/clutter-event.c
-@@ -566,6 +566,28 @@ clutter_event_get_related (const ClutterEvent *event)
-   return event->crossing.related;
- }
- 
-+/**
-+ * clutter_event_set_scroll_delta:
-+ * @event: a #ClutterEvent of type %CLUTTER_SCROLL
-+ * @dx: delta on the horizontal axis
-+ * @dy: delta on the vertical axis
-+ *
-+ * Sets the precise scrolling information of @event.
-+ */
-+void
-+clutter_event_set_scroll_delta (ClutterEvent *event,
-+                                gdouble       dx,
-+                                gdouble       dy)
-+{
-+  g_return_if_fail (event != NULL);
-+  g_return_if_fail (event->type == CLUTTER_SCROLL);
-+
-+  event->scroll.direction = CLUTTER_SCROLL_SMOOTH;
-+
-+  event->scroll.delta_x = dx;
-+  event->scroll.delta_y = dy;
-+}
-+
- /**
-  * clutter_event_get_scroll_delta:
-  * @event: a #ClutterEvent of type %CLUTTER_SCROLL
-diff --git a/clutter/clutter/clutter-event.h b/clutter/clutter/clutter-event.h
-index 62f244c05..af097052b 100644
---- a/clutter/clutter/clutter-event.h
-+++ b/clutter/clutter/clutter-event.h
-@@ -214,6 +214,10 @@ ClutterActor *          clutter_event_get_related               (const ClutterEv
- CLUTTER_EXPORT
- ClutterScrollDirection  clutter_event_get_scroll_direction      (const ClutterEvent     *event);
- CLUTTER_EXPORT
-+void                    clutter_event_set_scroll_delta          (ClutterEvent           *event,
-+                                                                 gdouble                 dx,
-+                                                                 gdouble                 dy);
-+CLUTTER_EXPORT
- void                    clutter_event_get_scroll_delta          (const ClutterEvent     *event,
-                                                                  gdouble                *dx,
-                                                                  gdouble                *dy);
--- 
-2.44.0
-
-
-From ffcdbd3c95db68e49a02a88c9166ce9b0dc3de84 Mon Sep 17 00:00:00 2001
-From: Andrew de los Reyes <adlr@gmail.com>
-Date: Sat, 20 Apr 2024 19:40:11 -0700
-Subject: [PATCH 10/11] allow setting finish flags
-
----
- clutter/clutter/clutter-event.c | 9 +++++++++
- clutter/clutter/clutter-event.h | 4 ++++
- 2 files changed, 13 insertions(+)
-
-diff --git a/clutter/clutter/clutter-event.c b/clutter/clutter/clutter-event.c
-index e0769d472..1e445631d 100644
---- a/clutter/clutter/clutter-event.c
-+++ b/clutter/clutter/clutter-event.c
-@@ -1592,6 +1592,15 @@ clutter_event_get_scroll_source (const ClutterEvent *event)
-   return event->scroll.scroll_source;
- }
- 
-+void
-+clutter_event_set_scroll_finish_flags (ClutterEvent *event,
-+                                       ClutterScrollFinishFlags finish_flags)
-+{
-+  g_return_if_fail (event != NULL);
-+  g_return_if_fail (event->type == CLUTTER_SCROLL);
-+
-+  event->scroll.finish_flags = finish_flags;
-+}
- /**
-  * clutter_event_get_scroll_finish_flags:
-  * @event: an scroll event
-diff --git a/clutter/clutter/clutter-event.h b/clutter/clutter/clutter-event.h
-index af097052b..6672904d4 100644
---- a/clutter/clutter/clutter-event.h
-+++ b/clutter/clutter/clutter-event.h
-@@ -260,6 +260,10 @@ void                    clutter_event_get_gesture_motion_delta_unaccelerated (co
- CLUTTER_EXPORT
- ClutterScrollSource      clutter_event_get_scroll_source             (const ClutterEvent     *event);
- 
-+CLUTTER_EXPORT
-+void                     clutter_event_set_scroll_finish_flags       (ClutterEvent             *event,
-+                                                                      ClutterScrollFinishFlags  finish_flags);
-+
- CLUTTER_EXPORT
- ClutterScrollFinishFlags clutter_event_get_scroll_finish_flags       (const ClutterEvent     *event);
- 
--- 
-2.44.0
-
-
-From ded871142c5f9a37e42c6b3cceb13fc8d0173418 Mon Sep 17 00:00:00 2001
-From: Andrew de los Reyes <adlr@gmail.com>
-Date: Sat, 20 Apr 2024 19:41:35 -0700
-Subject: [PATCH 11/11] use API to set finish flags
-
----
- src/core/events.c | 4 ++--
- 1 file changed, 2 insertions(+), 2 deletions(-)
-
-diff --git a/src/core/events.c b/src/core/events.c
-index 29dc7291e..9de387780 100644
---- a/src/core/events.c
-+++ b/src/core/events.c
-@@ -379,8 +379,8 @@ meta_display_handle_event (MetaDisplay        *display,
-         dx = 0;
-       }
-       // Const cast -- yucky
--      ((ClutterEvent*)event)->scroll.finish_flags =
--        CLUTTER_SCROLL_FINISHED_NONE;
-+      clutter_event_set_scroll_finish_flags((ClutterEvent*)event,
-+                                            CLUTTER_SCROLL_FINISHED_NONE);
-     }
- 
-     // Const cast -- yucky
 -- 
 2.44.0
 
